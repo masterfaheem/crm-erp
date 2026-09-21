@@ -88,7 +88,7 @@ export default function LoginPage() {
 
         <div className="relative max-w-sm">
           <p className="text-2xl font-medium leading-snug text-white xl:text-3xl">
-            Manage your store, orders and inventory from one place.
+            Manage your storesssssss with technoxxxxxxxxxxxxxxxxxxxxxx, orders and inventory from one place.
           </p>
           <p className="mt-4 text-sm text-white/50">
             Laptops &amp; smart devices, sorted.
