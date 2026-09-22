@@ -29,14 +29,18 @@ export default function LoginPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ email: email.trim(), password }),
+        body: JSON.stringify({
+          email: email.trim().toLowerCase(),
+          password,
+        }),
       });
 
       const data = await res.json().catch(() => ({}));
 
       if (!res.ok) {
         setError(
-          (data as { message?: string }).message ||
+          (data as { message?: string; error?: string }).message ||
+            (data as { error?: string }).error ||
             "Invalid email or password."
         );
         setIsSubmitting(false);
@@ -88,7 +92,7 @@ export default function LoginPage() {
 
         <div className="relative max-w-sm">
           <p className="text-2xl font-medium leading-snug text-white xl:text-3xl">
-            Manage your storesssssss with technoxxxxxxxxxxxxxxxxxxxxxx, orders and inventory from one place.
+            Manage your stores, orders and inventory from one place.
           </p>
           <p className="mt-4 text-sm text-white/50">
             Laptops &amp; smart devices, sorted.
