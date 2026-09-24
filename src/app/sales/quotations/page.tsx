@@ -286,4 +286,229 @@ function QuotationModal({
   const isEdit = !!quotation;
   const [customerId, setCustomerId] = useState(quotation?.customer_id ? String(quotation.customer_id) : "");
   const [quoteDate, setQuoteDate] = useState<string>(quotation?.quote_date?.slice(0, 10) || new Date().toISOString().slice(0, 10));
-  const [validUntil, setValidUntil] = useState<string>(quotation?.valid_until?.slice(0, 
+  const [validUntil, setValidUntil] = useState<string>(quotation?.valid_until?.slice(0, 10) || "");
+  const [status, setStatus] = useState<string>(quotation?.status || "draft");
+  const [notes, setNotes] = useState(quotation?.notes || "");
+  const [terms, setTerms] = useState("");
+  const [lines, setLines] = useState<DraftLine[]>([newLine()]);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!isEdit || !quotation) return;
+    (async () => {
+      setLoadingDetail(true);
+      try {
+        const res = await fetch(`/api/quotations/${quotation.id}`, { credentials: "include" });
+        if (!res.ok) return;
+        const j = await res.json();
+        if (!j.data) return;
+        setTerms(j.data.terms || "");
+        const items = (j.data.items || []) as Array<{
+          product_id: number | null; description: string; quantity: number;
+          unit_price: number; tax_rate: number; discount_percent: number;
+        }>;
+        if (items.length) {
+          setLines(items.map((it) => ({
+            key: Math.random().toString(36).slice(2),
+            product_id: it.product_id ? String(it.product_id) : "",
+            description: it.description || "",
+            quantity: String(it.quantity ?? 0),
+            unit_price: String(it.unit_price ?? 0),
+            tax_rate: String(it.tax_rate ?? 0),
+            discount_percent: String(it.discount_percent ?? 0),
+          })));
+        }
+      } finally { setLoadingDetail(false); }
+    })();
+  }, [isEdit, quotation]);
+
+  const totals = lines.reduce((acc, l) => {
+    const c = calcLine(l);
+    acc.subtotal += c.subtotal; acc.discount += c.discount; acc.tax += c.tax; acc.total += c.total;
+    return acc;
+  }, { subtotal: 0, discount: 0, tax: 0, total: 0 });
+
+  const addLine = () => setLines((p) => [...p, newLine()]);
+  const removeLine = (key: string) => setLines((p) => (p.length > 1 ? p.filter((l) => l.key !== key) : p));
+  const updateLine = (key: string, patch: Partial<DraftLine>) =>
+    setLines((p) => p.map((l) => (l.key === key ? { ...l, ...patch } : l)));
+
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault(); setError("");
+    if (!customerId) { setError("Please choose a customer."); return; }
+    if (lines.some((l) => !l.description.trim())) { setError("Every line needs a description."); return; }
+    setSaving(true);
+    try {
+      const payload = {
+        customer_id: Number(customerId),
+        quote_date: quoteDate,
+        valid_until: validUntil || null,
+        status,
+        notes: notes.trim() || null,
+        terms: terms.trim() || null,
+        items: lines.map((l) => ({
+          product_id: l.product_id ? Number(l.product_id) : null,
+          description: l.description.trim(),
+          quantity: Number(l.quantity) || 0,
+          unit_price: Number(l.unit_price) || 0,
+          tax_rate: Number(l.tax_rate) || 0,
+          discount_percent: Number(l.discount_percent) || 0,
+        })),
+      };
+      const url = isEdit ? `/api/quotations/${quotation!.id}` : "/api/quotations";
+      const method = isEdit ? "PUT" : "POST";
+      const res = await fetch(url, {
+        method, headers: { "Content-Type": "application/json" }, credentials: "include",
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || "Failed to save."); }
+      onSaved();
+    } catch (err) { setError(err instanceof Error ? err.message : "Something went wrong"); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg bg-white shadow-xl">
+        <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
+          <div>
+            <h2 className="text-base font-semibold text-gray-900">
+              {isEdit ? `Edit ${quotation?.quote_number}` : "New quotation"}
+            </h2>
+            <p className="mt-0.5 text-xs text-gray-500">
+              {isEdit ? "Update header and line items." : "Choose a customer and add items."}
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-md p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600">
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="flex flex-1 flex-col overflow-hidden">
+          <div className="flex-1 overflow-y-auto px-6 py-5">
+            {error && <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="sm:col-span-2">
+                <label className="mb-1.5 block text-xs font-medium text-gray-700">Customer <span className="text-red-500">*</span></label>
+                <select value={customerId} onChange={(e) => setCustomerId(e.target.value)} className={inputCls} required>
+                  <option value="">Select customer…</option>
+                  {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-gray-700">Quote date <span className="text-red-500">*</span></label>
+                <input type="date" value={quoteDate} onChange={(e) => setQuoteDate(e.target.value)} className={inputCls} required />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-gray-700">Valid until</label>
+                <input type="date" value={validUntil} onChange={(e) => setValidUntil(e.target.value)} className={inputCls} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-gray-700">Status</label>
+                <select value={status} onChange={(e) => setStatus(e.target.value)} className={inputCls}>
+                  <option value="draft">Draft</option>
+                  <option value="sent">Sent</option>
+                  <option value="accepted">Accepted</option>
+                  <option value="rejected">Rejected</option>
+                  <option value="expired">Expired</option>
+                  <option value="converted">Converted</option>
+                  <option value="cancelled">Cancelled</option>
+                </select>
+              </div>
+              <div className="sm:col-span-2 lg:col-span-3">
+                <label className="mb-1.5 block text-xs font-medium text-gray-700">Notes</label>
+                <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" className={inputCls} />
+              </div>
+              <div className="sm:col-span-2 lg:col-span-4">
+                <label className="mb-1.5 block text-xs font-medium text-gray-700">Terms & conditions</label>
+                <textarea rows={2} value={terms} onChange={(e) => setTerms(e.target.value)} placeholder="Optional" className={inputCls} />
+              </div>
+            </div>
+
+            <div className="mt-6">
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-gray-800">Line items</h3>
+                <button type="button" onClick={addLine} className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">+ Add line</button>
+              </div>
+              {loadingDetail ? (
+                <div className="rounded-md border border-gray-200 bg-gray-50 p-4 text-center text-xs text-gray-500">Loading items…</div>
+              ) : (
+                <div className="overflow-x-auto rounded-md border border-gray-200">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-gray-500">Description</th>
+                        <th className="w-20 px-2 py-2 text-right text-[10px] font-medium uppercase tracking-wide text-gray-500">Qty</th>
+                        <th className="w-24 px-2 py-2 text-right text-[10px] font-medium uppercase tracking-wide text-gray-500">Price</th>
+                        <th className="w-20 px-2 py-2 text-right text-[10px] font-medium uppercase tracking-wide text-gray-500">Tax %</th>
+                        <th className="w-20 px-2 py-2 text-right text-[10px] font-medium uppercase tracking-wide text-gray-500">Disc %</th>
+                        <th className="w-28 px-2 py-2 text-right text-[10px] font-medium uppercase tracking-wide text-gray-500">Total</th>
+                        <th className="w-8"></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {lines.map((l) => {
+                        const c = calcLine(l);
+                        return (
+                          <tr key={l.key}>
+                            <td className="px-2 py-1.5">
+                              <input type="text" value={l.description} onChange={(e) => updateLine(l.key, { description: e.target.value })}
+                                placeholder="Item description" className="w-full rounded border border-gray-200 px-2 py-1 text-sm outline-none focus:border-[#17D65D]" />
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <input type="number" step="0.001" min="0" value={l.quantity} onChange={(e) => updateLine(l.key, { quantity: e.target.value })}
+                                className="w-full rounded border border-gray-200 px-2 py-1 text-right text-sm outline-none focus:border-[#17D65D]" />
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <input type="number" step="0.001" min="0" value={l.unit_price} onChange={(e) => updateLine(l.key, { unit_price: e.target.value })}
+                                className="w-full rounded border border-gray-200 px-2 py-1 text-right text-sm outline-none focus:border-[#17D65D]" />
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <input type="number" step="0.001" min="0" value={l.tax_rate} onChange={(e) => updateLine(l.key, { tax_rate: e.target.value })}
+                                className="w-full rounded border border-gray-200 px-2 py-1 text-right text-sm outline-none focus:border-[#17D65D]" />
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <input type="number" step="0.001" min="0" max="100" value={l.discount_percent} onChange={(e) => updateLine(l.key, { discount_percent: e.target.value })}
+                                className="w-full rounded border border-gray-200 px-2 py-1 text-right text-sm outline-none focus:border-[#17D65D]" />
+                            </td>
+                            <td className="px-2 py-1.5 text-right text-sm font-medium text-gray-900">{formatCurrency(c.total)}</td>
+                            <td className="px-1 py-1.5 text-right">
+                              <button type="button" onClick={() => removeLine(l.key)} className="rounded p-1 text-gray-400 hover:bg-red-50 hover:text-red-600">×</button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4 flex justify-end">
+              <div className="w-full max-w-xs rounded-md border border-gray-200 bg-gray-50 p-4 text-sm">
+                <div className="flex justify-between py-1"><span className="text-gray-600">Subtotal</span><span className="font-medium text-gray-900">{formatCurrency(totals.subtotal)}</span></div>
+                <div className="flex justify-between py-1"><span className="text-gray-600">Discount</span><span className="font-medium text-gray-900">-{formatCurrency(totals.discount)}</span></div>
+                <div className="flex justify-between py-1"><span className="text-gray-600">Tax</span><span className="font-medium text-gray-900">{formatCurrency(totals.tax)}</span></div>
+                <div className="mt-2 flex justify-between border-t border-gray-200 pt-2 text-base font-semibold"><span>Grand total</span><span>{formatCurrency(totals.total)}</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 border-t border-gray-200 bg-gray-50 px-6 py-3.5">
+            <button type="button" onClick={onClose} disabled={saving}
+              className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50">Cancel</button>
+            <button type="submit" disabled={saving}
+              className="rounded-md bg-[#17D65D] px-4 py-2 text-sm font-medium text-black shadow-sm transition hover:bg-[#15c455] disabled:opacity-50">
+              {saving ? "Saving…" : isEdit ? "Save changes" : "Create quotation"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
