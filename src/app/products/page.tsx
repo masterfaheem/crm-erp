@@ -67,7 +67,7 @@ const STATUS_STYLE: Record<string, string> = {
 };
 
 function formatCurrency(n: number): string {
-  return "Rs " + (n || 0).toLocaleString("en-PK", { maximumFractionDigits: 2 });
+  return "Rs " + (Number(n) || 0).toLocaleString("en-PK", { maximumFractionDigits: 2 });
 }
 
 /* ============================================================
@@ -84,11 +84,14 @@ export default function ProductsPage() {
 
 function ProductsMain() {
   const [collapsed, setCollapsed] = useState(false);
+
   useEffect(() => {
     const read = () => {
       try {
         setCollapsed(localStorage.getItem("erp_sidebar_collapsed") === "true");
-      } catch {}
+      } catch {
+        /* ignore */
+      }
     };
     read();
     const onCustom = () => read();
@@ -116,6 +119,9 @@ function ProductsMain() {
   );
 }
 
+/* ============================================================
+   CONTENT
+============================================================ */
 function ProductsContent() {
   const [products, setProducts] = useState<ProductRow[]>([]);
   const [categories, setCategories] = useState<CategoryLite[]>([]);
@@ -139,7 +145,7 @@ function ProductsContent() {
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState<ProductRow | null>(null);
 
-  /* ---- Load reference data ---- */
+  /* ---- Load reference data (categories + units) ---- */
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -157,7 +163,9 @@ function ProductsContent() {
           const j = await uRes.json();
           setUnits(j.data || []);
         }
-      } catch {}
+      } catch {
+        /* ignore */
+      }
     })();
     return () => {
       cancelled = true;
@@ -177,14 +185,20 @@ function ProductsContent() {
       params.set("page", String(page));
       params.set("limit", "50");
 
-      const res = await fetch(`/api/products?${params.toString()}`, { credentials: "include" });
+      const res = await fetch(`/api/products?${params.toString()}`, {
+        credentials: "include",
+      });
       if (!res.ok) {
-        if (res.status === 401) throw new Error("Your session has expired. Please sign in again.");
+        if (res.status === 401) {
+          throw new Error("Your session has expired. Please sign in again.");
+        }
         throw new Error("Unable to load products.");
       }
       const json = await res.json();
       setProducts(json.data || []);
-      setPagination(json.pagination || { page: 1, limit: 50, total: 0, total_pages: 0 });
+      setPagination(
+        json.pagination || { page: 1, limit: 50, total: 0, total_pages: 0 }
+      );
       setTotalProducts(json.total_products || 0);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
@@ -198,23 +212,42 @@ function ProductsContent() {
     return () => clearTimeout(t);
   }, [fetchProducts]);
 
-  useEffect(() => setPage(1), [search, statusFilter, typeFilter, categoryFilter]);
+  useEffect(() => {
+    setPage(1);
+  }, [search, statusFilter, typeFilter, categoryFilter]);
 
   const handleDelete = async (p: ProductRow) => {
-    if (!window.confirm(`Delete product "${p.name}"?`)) return;
+    if (!window.confirm(`Delete product "${p.name}"? This cannot be undone.`))
+      return;
     try {
-      const res = await fetch(`/api/products/${p.id}`, { method: "DELETE", credentials: "include" });
+      const res = await fetch(`/api/products/${p.id}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
         throw new Error((j as { error?: string }).error || "Delete failed");
       }
       fetchProducts();
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : "Failed to delete");
+      window.alert(
+        err instanceof Error ? err.message : "Failed to delete product"
+      );
     }
   };
 
-  const hasFilters = !!search || !!statusFilter || !!typeFilter || !!categoryFilter;
+  const openCreate = () => {
+    setEditing(null);
+    setShowModal(true);
+  };
+
+  const openEdit = (p: ProductRow) => {
+    setEditing(p);
+    setShowModal(true);
+  };
+
+  const hasFilters =
+    !!search || !!statusFilter || !!typeFilter || !!categoryFilter;
 
   return (
     <div className="space-y-6">
@@ -235,8 +268,18 @@ function ProductsContent() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-1 flex-wrap items-center gap-2">
           <div className="relative flex-1 sm:max-w-xs">
-            <svg className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" />
+            <svg
+              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z"
+              />
             </svg>
             <input
               type="text"
@@ -247,20 +290,34 @@ function ProductsContent() {
             />
           </div>
 
-          <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-[#17D65D] focus:ring-2 focus:ring-[#17D65D]/20 sm:max-w-[180px]">
+          <select
+            value={categoryFilter}
+            onChange={(e) => setCategoryFilter(e.target.value)}
+            className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-[#17D65D] focus:ring-2 focus:ring-[#17D65D]/20 sm:max-w-[180px]"
+          >
             <option value="">All categories</option>
             {categories.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
             ))}
           </select>
 
-          <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-[#17D65D] focus:ring-2 focus:ring-[#17D65D]/20">
+          <select
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value)}
+            className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-[#17D65D] focus:ring-2 focus:ring-[#17D65D]/20"
+          >
             <option value="">All types</option>
             <option value="product">Product</option>
             <option value="service">Service</option>
           </select>
 
-          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-[#17D65D] focus:ring-2 focus:ring-[#17D65D]/20">
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-[#17D65D] focus:ring-2 focus:ring-[#17D65D]/20"
+          >
             <option value="">All status</option>
             <option value="active">Active</option>
             <option value="inactive">Inactive</option>
@@ -284,14 +341,21 @@ function ProductsContent() {
         </div>
 
         <button
-          onClick={() => {
-            setEditing(null);
-            setShowModal(true);
-          }}
+          onClick={openCreate}
           className="inline-flex items-center justify-center gap-2 rounded-md bg-[#17D65D] px-4 py-2 text-sm font-medium text-black shadow-sm transition hover:bg-[#15c455] active:scale-[0.98]"
         >
-          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+          <svg
+            className="h-4 w-4"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M12 4v16m8-8H4"
+            />
           </svg>
           New product
         </button>
@@ -303,35 +367,60 @@ function ProductsContent() {
           <table className="min-w-full divide-y divide-gray-200">
             <thead>
               <tr className="bg-gray-50">
-                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">Product</th>
-                <th className="hidden px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500 md:table-cell">Category</th>
-                <th className="hidden px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500 lg:table-cell">SKU</th>
-                <th className="hidden px-4 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500 md:table-cell">Purchase</th>
-                <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500">Sale</th>
-                <th className="hidden px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500 xl:table-cell">Type</th>
-                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">Status</th>
-                <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500">Actions</th>
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                  Product
+                </th>
+                <th className="hidden px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500 md:table-cell">
+                  Category
+                </th>
+                <th className="hidden px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500 lg:table-cell">
+                  SKU
+                </th>
+                <th className="hidden px-4 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500 md:table-cell">
+                  Purchase
+                </th>
+                <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500">
+                  Sale
+                </th>
+                <th className="hidden px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500 xl:table-cell">
+                  Type
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+                  Status
+                </th>
+                <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500">
+                  Actions
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {loading ? (
                 Array.from({ length: 5 }).map((_, i) => (
                   <tr key={i}>
-                    <td colSpan={8} className="px-4 py-3"><div className="h-6 animate-pulse rounded bg-gray-100" /></td>
+                    <td colSpan={8} className="px-4 py-3">
+                      <div className="h-6 animate-pulse rounded bg-gray-100" />
+                    </td>
                   </tr>
                 ))
               ) : error ? (
                 <tr>
                   <td colSpan={8} className="px-4 py-12 text-center">
                     <p className="text-sm text-gray-600">{error}</p>
-                    <button onClick={fetchProducts} className="mt-3 text-sm font-medium text-[#0fa846] underline hover:no-underline">Try again</button>
+                    <button
+                      onClick={fetchProducts}
+                      className="mt-3 text-sm font-medium text-[#0fa846] underline hover:no-underline"
+                    >
+                      Try again
+                    </button>
                   </td>
                 </tr>
               ) : products.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="px-4 py-12 text-center">
                     <p className="text-sm text-gray-500">
-                      {hasFilters ? "No products match your filters." : "No products yet. Create one to get started."}
+                      {hasFilters
+                        ? "No products match your filters."
+                        : "No products yet. Create one to get started."}
                     </p>
                   </td>
                 </tr>
@@ -340,8 +429,14 @@ function ProductsContent() {
                   <tr key={p.id} className="hover:bg-gray-50">
                     <td className="px-4 py-3.5">
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-medium text-gray-900">{p.name}</div>
-                        {p.description && <div className="truncate text-xs text-gray-500">{p.description}</div>}
+                        <div className="truncate text-sm font-medium text-gray-900">
+                          {p.name}
+                        </div>
+                        {p.description && (
+                          <div className="truncate text-xs text-gray-500">
+                            {p.description}
+                          </div>
+                        )}
                         {p.unit_short_name && (
                           <div className="mt-0.5 text-[11px] text-gray-400">
                             Per {p.unit_short_name}
@@ -352,7 +447,12 @@ function ProductsContent() {
                     <td className="hidden whitespace-nowrap px-4 py-3.5 md:table-cell">
                       {p.category_name ? (
                         <span className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-gray-50 px-2 py-0.5 text-xs font-medium text-gray-700">
-                          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: p.category_color || "#17D65D" }} />
+                          <span
+                            className="h-2 w-2 rounded-full"
+                            style={{
+                              backgroundColor: p.category_color || "#17D65D",
+                            }}
+                          />
                           {p.category_name}
                         </span>
                       ) : (
@@ -360,7 +460,9 @@ function ProductsContent() {
                       )}
                     </td>
                     <td className="hidden whitespace-nowrap px-4 py-3.5 lg:table-cell">
-                      <span className="font-mono text-xs text-gray-600">{p.sku}</span>
+                      <span className="font-mono text-xs text-gray-600">
+                        {p.sku}
+                      </span>
                     </td>
                     <td className="hidden whitespace-nowrap px-4 py-3.5 text-right text-sm text-gray-600 md:table-cell">
                       {formatCurrency(Number(p.purchase_price))}
@@ -374,22 +476,26 @@ function ProductsContent() {
                       </span>
                     </td>
                     <td className="whitespace-nowrap px-4 py-3.5">
-                      <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium capitalize ${STATUS_STYLE[p.status] || STATUS_STYLE.inactive}`}>
+                      <span
+                        className={`inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium capitalize ${
+                          STATUS_STYLE[p.status] || STATUS_STYLE.inactive
+                        }`}
+                      >
                         {p.status}
                       </span>
                     </td>
                     <td className="whitespace-nowrap px-4 py-3.5 text-right">
                       <button
-                        onClick={() => {
-                          setEditing(p);
-                          setShowModal(true);
-                        }}
+                        onClick={() => openEdit(p)}
                         className="text-sm font-medium text-[#0fa846] hover:text-[#0c8a3a]"
                       >
                         Edit
                       </button>
                       <span className="mx-2 text-gray-300">·</span>
-                      <button onClick={() => handleDelete(p)} className="text-sm font-medium text-gray-700 hover:text-red-600">
+                      <button
+                        onClick={() => handleDelete(p)}
+                        className="text-sm font-medium text-gray-700 hover:text-red-600"
+                      >
                         Delete
                       </button>
                     </td>
@@ -400,33 +506,42 @@ function ProductsContent() {
           </table>
         </div>
 
-        {!loading && !error && products.length > 0 && pagination.total_pages > 1 && (
-          <div className="flex items-center justify-between border-t border-gray-200 bg-gray-50 px-4 py-3">
-            <p className="text-xs text-gray-500">
-              Showing {(pagination.page - 1) * pagination.limit + 1}–
-              {Math.min(pagination.page * pagination.limit, pagination.total)} of {pagination.total}
-            </p>
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                disabled={pagination.page === 1}
-                className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40"
-              >
-                Previous
-              </button>
-              <span className="px-3 text-xs font-medium text-gray-700">
-                {pagination.page} / {pagination.total_pages}
-              </span>
-              <button
-                onClick={() => setPage((p) => Math.min(pagination.total_pages, p + 1))}
-                disabled={pagination.page === pagination.total_pages}
-                className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40"
-              >
-                Next
-              </button>
+        {!loading &&
+          !error &&
+          products.length > 0 &&
+          pagination.total_pages > 1 && (
+            <div className="flex items-center justify-between border-t border-gray-200 bg-gray-50 px-4 py-3">
+              <p className="text-xs text-gray-500">
+                Showing {(pagination.page - 1) * pagination.limit + 1}–
+                {Math.min(
+                  pagination.page * pagination.limit,
+                  pagination.total
+                )}{" "}
+                of {pagination.total}
+              </p>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={pagination.page === 1}
+                  className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+                >
+                  Previous
+                </button>
+                <span className="px-3 text-xs font-medium text-gray-700">
+                  {pagination.page} / {pagination.total_pages}
+                </span>
+                <button
+                  onClick={() =>
+                    setPage((p) => Math.min(pagination.total_pages, p + 1))
+                  }
+                  disabled={pagination.page === pagination.total_pages}
+                  className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </div>
             </div>
-          </div>
-        )}
+          )}
       </div>
 
       {showModal && (
@@ -468,23 +583,41 @@ function ProductModal({
   const [sku, setSku] = useState(product?.sku || "");
   const [barcode, setBarcode] = useState(product?.barcode || "");
   const [description, setDescription] = useState(product?.description || "");
-  const [productType, setProductType] = useState(product?.product_type || "product");
-  const [categoryId, setCategoryId] = useState<string>(product?.category_id ? String(product.category_id) : "");
-  const [unitId, setUnitId] = useState<string>(product?.unit_id ? String(product.unit_id) : "");
+  const [productType, setProductType] = useState<"product" | "service">(
+    product?.product_type || "product"
+  );
+  const [categoryId, setCategoryId] = useState<string>(
+    product?.category_id ? String(product.category_id) : ""
+  );
+  const [unitId, setUnitId] = useState<string>(
+    product?.unit_id ? String(product.unit_id) : ""
+  );
   const [status, setStatus] = useState<string>(product?.status || "active");
   const [notes, setNotes] = useState(product?.notes || "");
 
-  const [purchasePrice, setPurchasePrice] = useState(String(product?.purchase_price ?? 0));
+  const [purchasePrice, setPurchasePrice] = useState(
+    String(product?.purchase_price ?? 0)
+  );
   const [salePrice, setSalePrice] = useState(String(product?.sale_price ?? 0));
-  const [wholesalePrice, setWholesalePrice] = useState(String(product?.wholesale_price ?? 0));
+  const [wholesalePrice, setWholesalePrice] = useState(
+    String(product?.wholesale_price ?? 0)
+  );
   const [taxRate, setTaxRate] = useState(String(product?.tax_rate ?? 0));
-  const [discountPercent, setDiscountPercent] = useState(String(product?.discount_percent ?? 0));
+  const [discountPercent, setDiscountPercent] = useState(
+    String(product?.discount_percent ?? 0)
+  );
 
   const [minStock, setMinStock] = useState(String(product?.min_stock ?? 0));
   const [maxStock, setMaxStock] = useState(String(product?.max_stock ?? 0));
-  const [reorderLevel, setReorderLevel] = useState(String(product?.reorder_level ?? 0));
-  const [openingStock, setOpeningStock] = useState(String(product?.opening_stock ?? 0));
-  const [trackInventory, setTrackInventory] = useState(product?.track_inventory !== 0);
+  const [reorderLevel, setReorderLevel] = useState(
+    String(product?.reorder_level ?? 0)
+  );
+  const [openingStock, setOpeningStock] = useState(
+    String(product?.opening_stock ?? 0)
+  );
+  const [trackInventory, setTrackInventory] = useState(
+    product ? product.track_inventory !== 0 : true
+  );
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -527,10 +660,10 @@ function ProductModal({
       };
 
       const url = isEdit ? `/api/products/${product!.id}` : "/api/products";
-      const httpMethod = isEdit ? "PUT" : "POST";
+      const method = isEdit ? "PUT" : "POST";
 
       const res = await fetch(url, {
-        method: httpMethod,
+        method,
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify(payload),
@@ -538,7 +671,9 @@ function ProductModal({
 
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
-        throw new Error((j as { error?: string }).error || "Failed to save product.");
+        throw new Error(
+          (j as { error?: string }).error || "Failed to save product."
+        );
       }
       onSaved();
     } catch (err) {
@@ -558,7 +693,9 @@ function ProductModal({
               {isEdit ? "Edit product" : "Create product"}
             </h2>
             <p className="mt-0.5 text-xs text-gray-500">
-              {isEdit ? `Update details for ${product?.name}` : "Add a new product or service."}
+              {isEdit
+                ? `Update details for ${product?.name}`
+                : "Add a new product or service."}
             </p>
           </div>
           <button
@@ -566,8 +703,18 @@ function ProductModal({
             onClick={onClose}
             className="rounded-md p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600"
           >
-            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            <svg
+              className="h-5 w-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M6 18L18 6M6 6l12 12"
+              />
             </svg>
           </button>
         </div>
@@ -590,7 +737,10 @@ function ProductModal({
           ))}
         </div>
 
-        <form onSubmit={handleSubmit} className="flex flex-1 flex-col overflow-hidden">
+        <form
+          onSubmit={handleSubmit}
+          className="flex flex-1 flex-col overflow-hidden"
+        >
           <div className="flex-1 overflow-y-auto px-6 py-5">
             {error && (
               <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -642,15 +792,29 @@ function ProductModal({
                 </div>
 
                 <div>
-                  <label className="mb-1.5 block text-xs font-medium text-gray-700">Type</label>
-                  <select value={productType} onChange={(e) => setProductType(e.target.value as "product" | "service")} className={inputCls}>
+                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                    Type
+                  </label>
+                  <select
+                    value={productType}
+                    onChange={(e) =>
+                      setProductType(e.target.value as "product" | "service")
+                    }
+                    className={inputCls}
+                  >
                     <option value="product">Product</option>
                     <option value="service">Service</option>
                   </select>
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-xs font-medium text-gray-700">Status</label>
-                  <select value={status} onChange={(e) => setStatus(e.target.value)} className={inputCls}>
+                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                    Status
+                  </label>
+                  <select
+                    value={status}
+                    onChange={(e) => setStatus(e.target.value)}
+                    className={inputCls}
+                  >
                     <option value="active">Active</option>
                     <option value="inactive">Inactive</option>
                     <option value="discontinued">Discontinued</option>
@@ -658,26 +822,44 @@ function ProductModal({
                 </div>
 
                 <div>
-                  <label className="mb-1.5 block text-xs font-medium text-gray-700">Category</label>
-                  <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} className={inputCls}>
+                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                    Category
+                  </label>
+                  <select
+                    value={categoryId}
+                    onChange={(e) => setCategoryId(e.target.value)}
+                    className={inputCls}
+                  >
                     <option value="">No category</option>
                     {categories.map((c) => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
                     ))}
                   </select>
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-xs font-medium text-gray-700">Unit</label>
-                  <select value={unitId} onChange={(e) => setUnitId(e.target.value)} className={inputCls}>
+                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                    Unit
+                  </label>
+                  <select
+                    value={unitId}
+                    onChange={(e) => setUnitId(e.target.value)}
+                    className={inputCls}
+                  >
                     <option value="">No unit</option>
                     {units.map((u) => (
-                      <option key={u.id} value={u.id}>{u.name} ({u.short_name})</option>
+                      <option key={u.id} value={u.id}>
+                        {u.name} ({u.short_name})
+                      </option>
                     ))}
                   </select>
                 </div>
 
                 <div className="sm:col-span-2">
-                  <label className="mb-1.5 block text-xs font-medium text-gray-700">Description</label>
+                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                    Description
+                  </label>
                   <textarea
                     rows={2}
                     value={description}
@@ -693,24 +875,70 @@ function ProductModal({
             {tab === "pricing" && (
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
-                  <label className="mb-1.5 block text-xs font-medium text-gray-700">Purchase price</label>
-                  <input type="number" step="0.01" min="0" value={purchasePrice} onChange={(e) => setPurchasePrice(e.target.value)} className={inputCls} />
+                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                    Purchase price
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={purchasePrice}
+                    onChange={(e) => setPurchasePrice(e.target.value)}
+                    className={inputCls}
+                  />
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-xs font-medium text-gray-700">Sale price</label>
-                  <input type="number" step="0.01" min="0" value={salePrice} onChange={(e) => setSalePrice(e.target.value)} className={inputCls} />
+                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                    Sale price
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={salePrice}
+                    onChange={(e) => setSalePrice(e.target.value)}
+                    className={inputCls}
+                  />
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-xs font-medium text-gray-700">Wholesale price</label>
-                  <input type="number" step="0.01" min="0" value={wholesalePrice} onChange={(e) => setWholesalePrice(e.target.value)} className={inputCls} />
+                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                    Wholesale price
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={wholesalePrice}
+                    onChange={(e) => setWholesalePrice(e.target.value)}
+                    className={inputCls}
+                  />
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-xs font-medium text-gray-700">Tax rate (%)</label>
-                  <input type="number" step="0.001" min="0" value={taxRate} onChange={(e) => setTaxRate(e.target.value)} className={inputCls} />
+                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                    Tax rate (%)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.001"
+                    min="0"
+                    value={taxRate}
+                    onChange={(e) => setTaxRate(e.target.value)}
+                    className={inputCls}
+                  />
                 </div>
                 <div className="sm:col-span-2">
-                  <label className="mb-1.5 block text-xs font-medium text-gray-700">Discount (%)</label>
-                  <input type="number" step="0.001" min="0" max="100" value={discountPercent} onChange={(e) => setDiscountPercent(e.target.value)} className={inputCls} />
+                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                    Discount (%)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.001"
+                    min="0"
+                    max="100"
+                    value={discountPercent}
+                    onChange={(e) => setDiscountPercent(e.target.value)}
+                    className={inputCls}
+                  />
                 </div>
               </div>
             )}
@@ -727,32 +955,80 @@ function ProductModal({
                       className="h-4 w-4 cursor-pointer rounded border-gray-300 text-[#17D65D] focus:ring-[#17D65D]"
                     />
                     <div>
-                      <span className="block text-sm font-medium text-gray-800">Track inventory</span>
-                      <span className="block text-xs text-gray-500">Keep stock levels for this item.</span>
+                      <span className="block text-sm font-medium text-gray-800">
+                        Track inventory
+                      </span>
+                      <span className="block text-xs text-gray-500">
+                        Keep stock levels for this item.
+                      </span>
                     </div>
                   </label>
                 </div>
 
                 <div>
-                  <label className="mb-1.5 block text-xs font-medium text-gray-700">Opening stock</label>
-                  <input type="number" step="0.001" min="0" value={openingStock} onChange={(e) => setOpeningStock(e.target.value)} className={inputCls} />
+                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                    Opening stock
+                  </label>
+                  <input
+                    type="number"
+                    step="0.001"
+                    min="0"
+                    value={openingStock}
+                    onChange={(e) => setOpeningStock(e.target.value)}
+                    className={inputCls}
+                  />
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-xs font-medium text-gray-700">Minimum stock</label>
-                  <input type="number" step="0.001" min="0" value={minStock} onChange={(e) => setMinStock(e.target.value)} className={inputCls} />
+                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                    Minimum stock
+                  </label>
+                  <input
+                    type="number"
+                    step="0.001"
+                    min="0"
+                    value={minStock}
+                    onChange={(e) => setMinStock(e.target.value)}
+                    className={inputCls}
+                  />
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-xs font-medium text-gray-700">Maximum stock</label>
-                  <input type="number" step="0.001" min="0" value={maxStock} onChange={(e) => setMaxStock(e.target.value)} className={inputCls} />
+                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                    Maximum stock
+                  </label>
+                  <input
+                    type="number"
+                    step="0.001"
+                    min="0"
+                    value={maxStock}
+                    onChange={(e) => setMaxStock(e.target.value)}
+                    className={inputCls}
+                  />
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-xs font-medium text-gray-700">Reorder level</label>
-                  <input type="number" step="0.001" min="0" value={reorderLevel} onChange={(e) => setReorderLevel(e.target.value)} className={inputCls} />
+                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                    Reorder level
+                  </label>
+                  <input
+                    type="number"
+                    step="0.001"
+                    min="0"
+                    value={reorderLevel}
+                    onChange={(e) => setReorderLevel(e.target.value)}
+                    className={inputCls}
+                  />
                 </div>
 
                 <div className="sm:col-span-2">
-                  <label className="mb-1.5 block text-xs font-medium text-gray-700">Notes</label>
-                  <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional internal notes" className={inputCls} />
+                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                    Notes
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    placeholder="Optional internal notes"
+                    className={inputCls}
+                  />
                 </div>
               </div>
             )}
@@ -772,7 +1048,11 @@ function ProductModal({
               disabled={saving}
               className="rounded-md bg-[#17D65D] px-4 py-2 text-sm font-medium text-black shadow-sm transition hover:bg-[#15c455] disabled:opacity-50"
             >
-              {saving ? "Saving..." : isEdit ? "Save changes" : "Create product"}
+              {saving
+                ? "Saving..."
+                : isEdit
+                ? "Save changes"
+                : "Create product"}
             </button>
           </div>
         </form>
