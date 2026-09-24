@@ -32,12 +32,21 @@ jobs:
             echo "==> Stopping app (if running)..."
             pm2 stop "$APP_NAME" 2>/dev/null || true
 
-            echo "==> Killing any stray next/node build processes..."
-            pkill -f "next build"  2>/dev/null || true
-            pkill -f "next-server" 2>/dev/null || true
+            echo "==> Cleaning previous build artifacts..."
+            # Kill anything holding files in .next / node_modules, but ONLY
+            # processes owned by us and never our own shell / ancestors.
+            MY_PID=$$
+            for pat in "next build" "next-server" "next dev"; do
+              pids=$(pgrep -u "$(id -u)" -f "$pat" || true)
+              for pid in $pids; do
+                # Skip self and any ancestor
+                if [ "$pid" = "$MY_PID" ]; then continue; fi
+                if grep -q "^PPid:.*$(echo $MY_PID)" /proc/$pid/status 2>/dev/null; then continue; fi
+                kill "$pid" 2>/dev/null || true
+              done
+            done
             sleep 1
 
-            echo "==> Cleaning previous build artifacts..."
             rm -rf node_modules .next
 
             echo "==> Installing dependencies..."
