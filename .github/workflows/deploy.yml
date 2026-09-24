@@ -16,25 +16,41 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
+          command_timeout: 20m
           script: |
             set -e
 
-            cd /root/technox
+            APP_DIR=/root/technox
+            APP_NAME=app-masterfaheem
 
-            echo "Pulling latest code..."
+            cd "$APP_DIR"
+
+            echo "==> Pulling latest code..."
             git fetch origin main
             git reset --hard origin/main
 
-            echo "Installing dependencies..."
+            echo "==> Stopping app (if running)..."
+            pm2 stop "$APP_NAME" 2>/dev/null || true
+
+            echo "==> Killing any stray next/node build processes..."
+            pkill -f "next build"  2>/dev/null || true
+            pkill -f "next-server" 2>/dev/null || true
+            sleep 1
+
+            echo "==> Cleaning previous build artifacts..."
+            rm -rf node_modules .next
+
+            echo "==> Installing dependencies..."
             npm ci
 
-            echo "Building application..."
+            echo "==> Building application..."
             npm run build
 
-            echo "Restarting application..."
-            pm2 restart app-masterfaheem --update-env
+            echo "==> Restarting application..."
+            pm2 restart "$APP_NAME" --update-env || pm2 start npm --name "$APP_NAME" -- start
 
-            echo "Saving PM2 configuration..."
+            echo "==> Saving PM2 configuration..."
             pm2 save
 
-            echo "Deployment completed successfully."
+            echo "==> Deployment completed successfully."
+            pm2 status "$APP_NAME"
