@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db";
-import { requireAuth } from "@/lib/requireAuth";
+import { requireUser, unauthorized } from "@/lib/requireUser";
 
 /* ============================================================
    Helper: would setting parent_id = X create a cycle?
@@ -37,10 +37,10 @@ export async function PUT(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = await requireAuth();
-  if (!auth.ok) return auth.response;
+  const user = await requireUser(req);
+  if (!user) return unauthorized();
 
-  const companyId = auth.session.companyId;
+  const companyId = user.company_id;
 
   const { id: rawId } = await params;
   const id = Number(rawId);
@@ -127,13 +127,13 @@ export async function PUT(
    DELETE  /api/product-categories/:id
 ============================================================ */
 export async function DELETE(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = await requireAuth();
-  if (!auth.ok) return auth.response;
+  const user = await requireUser(req);
+  if (!user) return unauthorized();
 
-  const companyId = auth.session.companyId;
+  const companyId = user.company_id;
 
   const { id: rawId } = await params;
   const id = Number(rawId);
