@@ -1,15 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db";
-import { requireAuth } from "@/lib/requireAuth";
+import { requireUser, unauthorized } from "@/lib/requireUser";
 
 /* ============================================================
    GET  /api/product-categories
 ============================================================ */
 export async function GET(req: NextRequest) {
-  const auth = await requireAuth();
-  if (!auth.ok) return auth.response;
+  const user = await requireUser(req);
+  if (!user) return unauthorized();
 
-  const companyId = auth.session.companyId;
+  const companyId = user.company_id;
 
   try {
     const { searchParams } = new URL(req.url);
@@ -77,10 +77,10 @@ export async function GET(req: NextRequest) {
    POST /api/product-categories
 ============================================================ */
 export async function POST(req: NextRequest) {
-  const auth = await requireAuth();
-  if (!auth.ok) return auth.response;
+  const user = await requireUser(req);
+  if (!user) return unauthorized();
 
-  const companyId = auth.session.companyId;
+  const companyId = user.company_id;
 
   try {
     const body = await req.json().catch(() => ({}));
