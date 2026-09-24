@@ -1,6 +1,5 @@
-// app/api/product-categories/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { query } from "@/lib/db";        // <-- your db.ts
+import { query } from "@/lib/db";
 import { requireAuth } from "@/lib/requireAuth";
 
 /* ============================================================
@@ -8,7 +7,7 @@ import { requireAuth } from "@/lib/requireAuth";
    Query: search, status
 ============================================================ */
 export async function GET(req: NextRequest) {
-  const auth = requireAuth();
+  const auth = await requireAuth();
   if (!auth.ok) return auth.response;
 
   try {
@@ -29,7 +28,6 @@ export async function GET(req: NextRequest) {
     }
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-    /* If your products table is named differently, only this JOIN changes. */
     const sql = `
       SELECT
         c.id,
@@ -61,7 +59,6 @@ export async function GET(req: NextRequest) {
     `;
 
     const rows = await query<any[]>(sql, params);
-
     return NextResponse.json({ data: rows });
   } catch (err) {
     console.error("[GET /api/product-categories]", err);
@@ -77,13 +74,15 @@ export async function GET(req: NextRequest) {
    Body: { name, description, color, parent_id, status }
 ============================================================ */
 export async function POST(req: NextRequest) {
-  const auth = requireAuth();
+  const auth = await requireAuth();
   if (!auth.ok) return auth.response;
 
   try {
     const body = await req.json().catch(() => ({}));
     const name = String(body.name ?? "").trim();
-    const description = body.description ? String(body.description).trim() : null;
+    const description = body.description
+      ? String(body.description).trim()
+      : null;
     const color = body.color ? String(body.color).trim() : null;
     const parent_id = body.parent_id ? Number(body.parent_id) : null;
     const status = body.status === "inactive" ? "inactive" : "active";
@@ -95,7 +94,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    /* Validate parent exists (if provided) */
     if (parent_id) {
       const [parent] = await query<any[]>(
         "SELECT id FROM product_categories WHERE id = ? LIMIT 1",
