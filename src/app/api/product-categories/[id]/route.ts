@@ -1,4 +1,3 @@
-// app/api/product-categories/[id]/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db";
 import { requireAuth } from "@/lib/requireAuth";
@@ -6,19 +5,22 @@ import { requireAuth } from "@/lib/requireAuth";
 /* ============================================================
    Helper: would setting parent_id = X create a cycle?
 ============================================================ */
-async function wouldCreateCycle(id: number, newParentId: number): Promise<boolean> {
+async function wouldCreateCycle(
+  id: number,
+  newParentId: number
+): Promise<boolean> {
   if (id === newParentId) return true;
 
-  /* Walk up from the proposed parent; if we ever hit `id`, it's a cycle. */
   let current: number | null = newParentId;
   const seen = new Set<number>();
 
   while (current) {
     if (current === id) return true;
-    if (seen.has(current)) return true; // safety against pre-existing bad data
+    if (seen.has(current)) return true;
     seen.add(current);
 
-    const rows = await query<any[]>(
+    // Explicit annotation prevents TS7022 (implicit any in a loop).
+    const rows: Array<{ parent_id: number | null }> = await query(
       "SELECT parent_id FROM product_categories WHERE id = ? LIMIT 1",
       [current]
     );
@@ -30,15 +32,17 @@ async function wouldCreateCycle(id: number, newParentId: number): Promise<boolea
 
 /* ============================================================
    PUT  /api/product-categories/:id
+   Next.js 16: `params` is a Promise — must be awaited.
 ============================================================ */
 export async function PUT(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireAuth();
+  const auth = await requireAuth();
   if (!auth.ok) return auth.response;
 
-  const id = Number(params.id);
+  const { id: rawId } = await params;
+  const id = Number(rawId);
   if (!Number.isFinite(id)) {
     return NextResponse.json({ error: "Invalid id." }, { status: 400 });
   }
@@ -46,7 +50,9 @@ export async function PUT(
   try {
     const body = await req.json().catch(() => ({}));
     const name = String(body.name ?? "").trim();
-    const description = body.description ? String(body.description).trim() : null;
+    const description = body.description
+      ? String(body.description).trim()
+      : null;
     const color = body.color ? String(body.color).trim() : null;
     const parent_id = body.parent_id ? Number(body.parent_id) : null;
     const status = body.status === "inactive" ? "inactive" : "active";
@@ -58,7 +64,6 @@ export async function PUT(
       );
     }
 
-    /* Confirm exists */
     const [existing] = await query<any[]>(
       "SELECT id FROM product_categories WHERE id = ? LIMIT 1",
       [id]
@@ -70,7 +75,6 @@ export async function PUT(
       );
     }
 
-    /* Validate parent */
     if (parent_id) {
       const [parent] = await query<any[]>(
         "SELECT id FROM product_categories WHERE id = ? LIMIT 1",
@@ -119,16 +123,17 @@ export async function PUT(
 
 /* ============================================================
    DELETE  /api/product-categories/:id
-   - Blocks delete if products or subcategories exist.
+   Next.js 16: `params` is a Promise — must be awaited.
 ============================================================ */
 export async function DELETE(
   _req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = requireAuth();
+  const auth = await requireAuth();
   if (!auth.ok) return auth.response;
 
-  const id = Number(params.id);
+  const { id: rawId } = await params;
+  const id = Number(rawId);
   if (!Number.isFinite(id)) {
     return NextResponse.json({ error: "Invalid id." }, { status: 400 });
   }
@@ -145,7 +150,6 @@ export async function DELETE(
       );
     }
 
-    /* Block if products reference it */
     const [prodCount] = await query<any[]>(
       "SELECT COUNT(*) AS cnt FROM products WHERE category_id = ?",
       [id]
@@ -159,7 +163,6 @@ export async function DELETE(
       );
     }
 
-    /* Block if it has children */
     const [subCount] = await query<any[]>(
       "SELECT COUNT(*) AS cnt FROM product_categories WHERE parent_id = ?",
       [id]
@@ -174,7 +177,6 @@ export async function DELETE(
     }
 
     await query("DELETE FROM product_categories WHERE id = ?", [id]);
-
     return NextResponse.json({ success: true });
   } catch (err) {
     console.error("[DELETE /api/product-categories/:id]", err);
