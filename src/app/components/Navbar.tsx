@@ -150,7 +150,7 @@ const NAV_GROUPS: NavGroup[] = [
       { label: "Quotations", href: "/sales/quotations" },
       { label: "Sales Orders", href: "/sales/sales-orders" },
       { label: "Invoices", href: "/invoices" },
-      { label: "Customer Payments", href: "/payments" },
+      { label: "Customer Payments", href: "/sales/customer-payments" },
     ],
   },
   {
