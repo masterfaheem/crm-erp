@@ -32,22 +32,38 @@ jobs:
             echo "==> Stopping app (if running)..."
             pm2 stop "$APP_NAME" 2>/dev/null || true
 
-            echo "==> Cleaning previous build artifacts..."
-            # Kill anything holding files in .next / node_modules, but ONLY
-            # processes owned by us and never our own shell / ancestors.
-            MY_PID=$$
-            for pat in "next build" "next-server" "next dev"; do
-              pids=$(pgrep -u "$(id -u)" -f "$pat" || true)
-              for pid in $pids; do
-                # Skip self and any ancestor
-                if [ "$pid" = "$MY_PID" ]; then continue; fi
-                if grep -q "^PPid:.*$(echo $MY_PID)" /proc/$pid/status 2>/dev/null; then continue; fi
-                kill "$pid" 2>/dev/null || true
-              done
+            echo "==> Killing any leftover node processes for this app..."
+            # Kill by process name — but ONLY processes whose cwd is $APP_DIR.
+            # This avoids killing the SSH session or unrelated node apps (like chatbot).
+            for pid in $(pgrep -u "$(id -u)" -f "next" || true); do
+              # skip if PID no longer exists
+              [ -d "/proc/$pid" ] || continue
+              # only kill if its cwd is our app dir (or a subdir)
+              if [ -L "/proc/$pid/cwd" ]; then
+                CWD=$(readlink "/proc/$pid/cwd" 2>/dev/null || echo "")
+                case "$CWD" in
+                  "$APP_DIR"*)
+                    echo "    killing pid=$pid cwd=$CWD"
+                    kill -9 "$pid" 2>/dev/null || true
+                    ;;
+                esac
+              fi
             done
-            sleep 1
 
-            rm -rf node_modules .next
+            # Give the kernel a moment to release file handles
+            sleep 2
+
+            echo "==> Deleting build artifacts..."
+            rm -rf .next || true
+
+            # If node_modules still has locked dirs, retry once after another delay
+            if [ -d node_modules ]; then
+              rm -rf node_modules 2>/dev/null || {
+                echo "    node_modules still locked — waiting..."
+                sleep 3
+                rm -rf node_modules
+              }
+            fi
 
             echo "==> Installing dependencies..."
             npm ci
