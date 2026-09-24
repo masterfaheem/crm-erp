@@ -4,19 +4,20 @@ import { requireAuth } from "@/lib/requireAuth";
 
 /* ============================================================
    GET  /api/product-categories
-   Query: search, status
 ============================================================ */
 export async function GET(req: NextRequest) {
   const auth = await requireAuth();
   if (!auth.ok) return auth.response;
+
+  const companyId = auth.session.companyId;
 
   try {
     const { searchParams } = new URL(req.url);
     const search = (searchParams.get("search") || "").trim();
     const status = (searchParams.get("status") || "").trim();
 
-    const where: string[] = [];
-    const params: any[] = [];
+    const where: string[] = ["c.company_id = ?"];
+    const params: any[] = [companyId];
 
     if (search) {
       where.push("(c.name LIKE ? OR c.description LIKE ?)");
@@ -26,7 +27,7 @@ export async function GET(req: NextRequest) {
       where.push("c.status = ?");
       params.push(status);
     }
-    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const whereSql = `WHERE ${where.join(" AND ")}`;
 
     const sql = `
       SELECT
@@ -41,24 +42,27 @@ export async function GET(req: NextRequest) {
         COALESCE(prod.cnt, 0) AS product_count,
         COALESCE(sub.cnt, 0)  AS subcategory_count
       FROM product_categories c
-      LEFT JOIN product_categories p ON p.id = c.parent_id
+      LEFT JOIN product_categories p
+        ON p.id = c.parent_id AND p.company_id = c.company_id
       LEFT JOIN (
         SELECT category_id, COUNT(*) AS cnt
         FROM products
-        WHERE category_id IS NOT NULL
+        WHERE category_id IS NOT NULL AND company_id = ?
         GROUP BY category_id
       ) prod ON prod.category_id = c.id
       LEFT JOIN (
         SELECT parent_id, COUNT(*) AS cnt
         FROM product_categories
-        WHERE parent_id IS NOT NULL
+        WHERE parent_id IS NOT NULL AND company_id = ?
         GROUP BY parent_id
       ) sub ON sub.parent_id = c.id
       ${whereSql}
       ORDER BY c.name ASC
     `;
 
-    const rows = await query<any[]>(sql, params);
+    const allParams = [companyId, companyId, ...params];
+    const rows = await query<any[]>(sql, allParams);
+
     return NextResponse.json({ data: rows });
   } catch (err) {
     console.error("[GET /api/product-categories]", err);
@@ -71,11 +75,12 @@ export async function GET(req: NextRequest) {
 
 /* ============================================================
    POST /api/product-categories
-   Body: { name, description, color, parent_id, status }
 ============================================================ */
 export async function POST(req: NextRequest) {
   const auth = await requireAuth();
   if (!auth.ok) return auth.response;
+
+  const companyId = auth.session.companyId;
 
   try {
     const body = await req.json().catch(() => ({}));
@@ -96,8 +101,8 @@ export async function POST(req: NextRequest) {
 
     if (parent_id) {
       const [parent] = await query<any[]>(
-        "SELECT id FROM product_categories WHERE id = ? LIMIT 1",
-        [parent_id]
+        "SELECT id FROM product_categories WHERE id = ? AND company_id = ? LIMIT 1",
+        [parent_id, companyId]
       );
       if (!parent) {
         return NextResponse.json(
@@ -109,9 +114,9 @@ export async function POST(req: NextRequest) {
 
     const result: any = await query(
       `INSERT INTO product_categories
-         (name, description, color, parent_id, status)
-       VALUES (?, ?, ?, ?, ?)`,
-      [name, description, color, parent_id, status]
+         (company_id, name, description, color, parent_id, status)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [companyId, name, description, color, parent_id, status]
     );
 
     const insertId = result.insertId;
@@ -121,9 +126,10 @@ export async function POST(req: NextRequest) {
          c.id, c.name, c.description, c.color, c.parent_id, c.status,
          c.created_at, p.name AS parent_name
        FROM product_categories c
-       LEFT JOIN product_categories p ON p.id = c.parent_id
-       WHERE c.id = ?`,
-      [insertId]
+       LEFT JOIN product_categories p
+         ON p.id = c.parent_id AND p.company_id = c.company_id
+       WHERE c.id = ? AND c.company_id = ?`,
+      [insertId, companyId]
     );
 
     return NextResponse.json({ data: row }, { status: 201 });
