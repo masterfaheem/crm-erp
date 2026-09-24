@@ -147,8 +147,8 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Sales",
     icon: ICONS.sales,
     children: [
-      { label: "Quotations", href: "/quotations" },
-      { label: "Sales Orders", href: "/orders" },
+      { label: "Quotations", href: "/sales/quotations" },
+      { label: "Sales Orders", href: "/sales/sales-orders" },
       { label: "Invoices", href: "/invoices" },
       { label: "Customer Payments", href: "/payments" },
     ],
