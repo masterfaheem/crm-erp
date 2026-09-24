@@ -10,10 +10,6 @@ export type AuthResult =
   | { ok: true; session: SessionPayload }
   | { ok: false; response: NextResponse };
 
-/**
- * Next.js 16: `cookies()` is async — must be awaited.
- * Every caller must also `await requireAuth()`.
- */
 export async function requireAuth(): Promise<AuthResult> {
   const cookieStore = await cookies();
   const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
