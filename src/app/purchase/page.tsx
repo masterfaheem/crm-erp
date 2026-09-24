@@ -589,4 +589,179 @@ function PurchaseOrderModal({
               {isEdit ? "Update header and line items." : "Choose a supplier and add line items."}
             </p>
           </div>
-          <button type="button" onClick={onClose} className="rounded-md p-1.5 text-gray-400 transition hover:bg-gray
+          <button type="button" onClick={onClose} className="rounded-md p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600">
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="flex flex-1 flex-col overflow-hidden">
+          <div className="flex-1 overflow-y-auto px-6 py-5">
+            {error && (
+              <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {error}
+              </div>
+            )}
+
+            {/* HEADER FIELDS */}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="sm:col-span-2">
+                <label className="mb-1.5 block text-xs font-medium text-gray-700">Supplier <span className="text-red-500">*</span></label>
+                <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)} className={inputCls} required>
+                  <option value="">Select supplier…</option>
+                  {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
+
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-gray-700">Order date <span className="text-red-500">*</span></label>
+                <input type="date" value={orderDate} onChange={(e) => setOrderDate(e.target.value)} className={inputCls} required />
+              </div>
+
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-gray-700">Expected date</label>
+                <input type="date" value={expectedDate} onChange={(e) => setExpectedDate(e.target.value)} className={inputCls} />
+              </div>
+
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-gray-700">Status</label>
+                <select value={status} onChange={(e) => setStatus(e.target.value)} className={inputCls}>
+                  <option value="draft">Draft</option>
+                  <option value="pending">Pending</option>
+                  <option value="approved">Approved</option>
+                  <option value="partially_received">Partially received</option>
+                  <option value="received">Received</option>
+                  <option value="cancelled">Cancelled</option>
+                </select>
+              </div>
+
+              <div className="sm:col-span-2 lg:col-span-3">
+                <label className="mb-1.5 block text-xs font-medium text-gray-700">Notes</label>
+                <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" className={inputCls} />
+              </div>
+            </div>
+
+            {/* LINE ITEMS */}
+            <div className="mt-6">
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-gray-800">Line items</h3>
+                <button type="button" onClick={addLine} className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">
+                  <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                  </svg>
+                  Add line
+                </button>
+              </div>
+
+              {loadingDetail ? (
+                <div className="rounded-md border border-gray-200 bg-gray-50 p-4 text-center text-xs text-gray-500">
+                  Loading items…
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-md border border-gray-200">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-gray-500">Description</th>
+                        <th className="w-20 px-2 py-2 text-right text-[10px] font-medium uppercase tracking-wide text-gray-500">Qty</th>
+                        <th className="w-24 px-2 py-2 text-right text-[10px] font-medium uppercase tracking-wide text-gray-500">Price</th>
+                        <th className="w-20 px-2 py-2 text-right text-[10px] font-medium uppercase tracking-wide text-gray-500">Tax %</th>
+                        <th className="w-20 px-2 py-2 text-right text-[10px] font-medium uppercase tracking-wide text-gray-500">Disc %</th>
+                        <th className="w-28 px-2 py-2 text-right text-[10px] font-medium uppercase tracking-wide text-gray-500">Total</th>
+                        <th className="w-8"></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {lines.map((l) => {
+                        const c = calcLine(l);
+                        return (
+                          <tr key={l.key}>
+                            <td className="px-2 py-1.5">
+                              <input
+                                type="text"
+                                value={l.description}
+                                onChange={(e) => updateLine(l.key, { description: e.target.value })}
+                                placeholder="Item description"
+                                className="w-full rounded border border-gray-200 px-2 py-1 text-sm outline-none focus:border-[#17D65D]"
+                              />
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <input
+                                type="number" step="0.001" min="0"
+                                value={l.quantity}
+                                onChange={(e) => updateLine(l.key, { quantity: e.target.value })}
+                                className="w-full rounded border border-gray-200 px-2 py-1 text-right text-sm outline-none focus:border-[#17D65D]"
+                              />
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <input
+                                type="number" step="0.001" min="0"
+                                value={l.unit_price}
+                                onChange={(e) => updateLine(l.key, { unit_price: e.target.value })}
+                                className="w-full rounded border border-gray-200 px-2 py-1 text-right text-sm outline-none focus:border-[#17D65D]"
+                              />
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <input
+                                type="number" step="0.001" min="0"
+                                value={l.tax_rate}
+                                onChange={(e) => updateLine(l.key, { tax_rate: e.target.value })}
+                                className="w-full rounded border border-gray-200 px-2 py-1 text-right text-sm outline-none focus:border-[#17D65D]"
+                              />
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <input
+                                type="number" step="0.001" min="0" max="100"
+                                value={l.discount_percent}
+                                onChange={(e) => updateLine(l.key, { discount_percent: e.target.value })}
+                                className="w-full rounded border border-gray-200 px-2 py-1 text-right text-sm outline-none focus:border-[#17D65D]"
+                              />
+                            </td>
+                            <td className="px-2 py-1.5 text-right text-sm font-medium text-gray-900">
+                              {formatCurrency(c.total)}
+                            </td>
+                            <td className="px-1 py-1.5 text-right">
+                              <button
+                                type="button"
+                                onClick={() => removeLine(l.key)}
+                                className="rounded p-1 text-gray-400 hover:bg-red-50 hover:text-red-600"
+                                title="Remove line"
+                              >
+                                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* TOTALS */}
+            <div className="mt-4 flex justify-end">
+              <div className="w-full max-w-xs rounded-md border border-gray-200 bg-gray-50 p-4 text-sm">
+                <div className="flex justify-between py-1"><span className="text-gray-600">Subtotal</span><span className="font-medium text-gray-900">{formatCurrency(totals.subtotal)}</span></div>
+                <div className="flex justify-between py-1"><span className="text-gray-600">Discount</span><span className="font-medium text-gray-900">-{formatCurrency(totals.discount)}</span></div>
+                <div className="flex justify-between py-1"><span className="text-gray-600">Tax</span><span className="font-medium text-gray-900">{formatCurrency(totals.tax)}</span></div>
+                <div className="mt-2 flex justify-between border-t border-gray-200 pt-2 text-base font-semibold"><span>Grand total</span><span>{formatCurrency(totals.total)}</span></div>
+              </div>
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="flex items-center justify-end gap-2 border-t border-gray-200 bg-gray-50 px-6 py-3.5">
+            <button type="button" onClick={onClose} disabled={saving} className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50">Cancel</button>
+            <button type="submit" disabled={saving} className="rounded-md bg-[#17D65D] px-4 py-2 text-sm font-medium text-black shadow-sm transition hover:bg-[#15c455] disabled:opacity-50">
+              {saving ? "Saving…" : isEdit ? "Save changes" : "Create order"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
