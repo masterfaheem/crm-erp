@@ -140,7 +140,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: ICONS.purchases,
     children: [
       { label: "Purchase Orders", href: "/purchase/purchase-orders" },
-      { label: "Purchase Bills", href: "/purchase-bills" },
+      { label: "Purchase Bills", href: "/purchase/purchase-bills" },
     ],
   },
   {
