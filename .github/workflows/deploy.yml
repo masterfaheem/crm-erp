@@ -29,16 +29,24 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
-            echo "==> Stopping app (if running)..."
+            echo "==> Stopping app..."
             pm2 stop "$APP_NAME" 2>/dev/null || true
 
-            echo "==> Killing any leftover node processes for this app..."
-            # Kill by process name — but ONLY processes whose cwd is $APP_DIR.
-            # This avoids killing the SSH session or unrelated node apps (like chatbot).
-            for pid in $(pgrep -u "$(id -u)" -f "next" || true); do
-              # skip if PID no longer exists
+            echo "==> Killing leftover node processes for this app..."
+
+            # Build a skip list: our shell + all its ancestors.
+            SELF=$$
+            SKIP=" $SELF "
+            p=$SELF
+            while [ "$p" != "1" ] && [ -n "$p" ]; do
+              p=$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null || echo "")
+              [ -n "$p" ] && SKIP="$SKIP$p "
+            done
+
+            # Only consider processes whose binary name is exactly "node".
+            for pid in $(pgrep -x node 2>/dev/null || true); do
+              case " $SKIP " in *" $pid "*) continue ;; esac
               [ -d "/proc/$pid" ] || continue
-              # only kill if its cwd is our app dir (or a subdir)
               if [ -L "/proc/$pid/cwd" ]; then
                 CWD=$(readlink "/proc/$pid/cwd" 2>/dev/null || echo "")
                 case "$CWD" in
@@ -50,13 +58,11 @@ jobs:
               fi
             done
 
-            # Give the kernel a moment to release file handles
             sleep 2
 
             echo "==> Deleting build artifacts..."
             rm -rf .next || true
 
-            # If node_modules still has locked dirs, retry once after another delay
             if [ -d node_modules ]; then
               rm -rf node_modules 2>/dev/null || {
                 echo "    node_modules still locked — waiting..."
