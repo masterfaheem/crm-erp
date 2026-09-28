@@ -19,6 +19,44 @@ async function requireUser(req: NextRequest) {
 }
 
 /* ============================================================
+   VALIDATION CONSTANTS (must match POST in /api/customers)
+============================================================ */
+const ALLOWED_SOURCES = [
+  "fb_page_techno_x",
+  "instagram_tx",
+  "tiktok",
+  "reference_someone",
+  "follower_sir_faheem",
+  "repeat",
+  "wom",
+  "alumni_groups",
+  "whatsapp_channel",
+  "ad",
+  "gmb",
+  "website",
+  "other",
+];
+
+const ALLOWED_AD_PLATFORMS = [
+  "facebook",
+  "instagram",
+  "tiktok",
+  "google",
+  "youtube",
+  "linkedin",
+  "other",
+];
+
+const ALLOWED_PROFESSIONS = [
+  "student",
+  "freelancer",
+  "agency_software_house",
+  "local_business",
+  "ecommerce",
+  "other",
+];
+
+/* ============================================================
    GET /api/customers/[id]
    Full customer + contacts + groups.
 ============================================================ */
@@ -148,6 +186,89 @@ export async function PUT(
       }
     }
 
+    /* ============================================================
+       RESOLVE NEW SOURCE / PROFESSION FIELDS
+       - Validate values
+       - Only keep sub-fields when their parent is the matching type
+    ============================================================ */
+
+    /* ---- Source ---- */
+    let newSource: string | null =
+      body.source !== undefined ? body.source : existing.source;
+
+    if (newSource !== null && newSource !== undefined && newSource !== "") {
+      const s = String(newSource).trim();
+      if (!ALLOWED_SOURCES.includes(s)) {
+        return NextResponse.json(
+          { error: "Invalid source value" },
+          { status: 400 }
+        );
+      }
+      newSource = s;
+    } else {
+      newSource = null;
+    }
+
+    /* ---- Source: "other" free-text ---- */
+    let newSourceOther: string | null = null;
+    if (newSource === "other") {
+      const raw =
+        body.source_other !== undefined
+          ? body.source_other
+          : existing.source_other;
+      newSourceOther = raw ? String(raw).trim() || null : null;
+    }
+
+    /* ---- Source: ad platform (only when source === 'ad') ---- */
+    let newSourceAdPlatform: string | null = null;
+    if (newSource === "ad") {
+      const raw =
+        body.source_ad_platform !== undefined
+          ? body.source_ad_platform
+          : existing.source_ad_platform;
+      if (raw) {
+        const p = String(raw).trim();
+        if (!ALLOWED_AD_PLATFORMS.includes(p)) {
+          return NextResponse.json(
+            { error: "Invalid ad platform value" },
+            { status: 400 }
+          );
+        }
+        newSourceAdPlatform = p;
+      }
+    }
+
+    /* ---- Profession ---- */
+    let newProfession: string | null =
+      body.profession !== undefined ? body.profession : existing.profession;
+
+    if (
+      newProfession !== null &&
+      newProfession !== undefined &&
+      newProfession !== ""
+    ) {
+      const p = String(newProfession).trim();
+      if (!ALLOWED_PROFESSIONS.includes(p)) {
+        return NextResponse.json(
+          { error: "Invalid profession value" },
+          { status: 400 }
+        );
+      }
+      newProfession = p;
+    } else {
+      newProfession = null;
+    }
+
+    /* ---- Profession: "other" free-text ---- */
+    let newProfessionOther: string | null = null;
+    if (newProfession === "other") {
+      const raw =
+        body.profession_other !== undefined
+          ? body.profession_other
+          : existing.profession_other;
+      newProfessionOther = raw ? String(raw).trim() || null : null;
+    }
+
     await conn.beginTransaction();
 
     await conn.query(
@@ -162,7 +283,10 @@ export async function PUT(
         credit_limit = ?, credit_days = ?, opening_balance = ?,
         balance_type = ?, currency_code = ?,
         tax_exempt = ?, default_tax_rate = ?,
-        status = ?, notes = ?, updated_by = ?
+        status = ?, notes = ?,
+        source = ?, source_other = ?, source_ad_platform = ?,
+        profession = ?, profession_other = ?,
+        updated_by = ?
        WHERE id = ? AND company_id = ?`,
       [
         body.branch_id !== undefined
@@ -281,6 +405,13 @@ export async function PUT(
             ? String(body.notes).trim()
             : null
           : existing.notes,
+        // NEW FIELDS
+        newSource,
+        newSourceOther,
+        newSourceAdPlatform,
+        newProfession,
+        newProfessionOther,
+        // meta
         authUser.id,
         id,
         authUser.company_id,
@@ -304,8 +435,18 @@ export async function PUT(
           authUser.company_id,
           authUser.id,
           id,
-          JSON.stringify({ name: existing.name, status: existing.status }),
-          JSON.stringify({ name, status: body.status ?? existing.status }),
+          JSON.stringify({
+            name: existing.name,
+            status: existing.status,
+            source: existing.source,
+            profession: existing.profession,
+          }),
+          JSON.stringify({
+            name,
+            status: body.status ?? existing.status,
+            source: newSource,
+            profession: newProfession,
+          }),
           ip,
           ua ? ua.slice(0, 500) : null,
         ]
