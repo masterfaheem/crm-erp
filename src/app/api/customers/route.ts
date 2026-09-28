@@ -38,14 +38,55 @@ async function generateCustomerCode(
 }
 
 /* ============================================================
+   SOURCE VALIDATION
+   Allowed values for the `source` column
+============================================================ */
+const ALLOWED_SOURCES = [
+  "fb_page_techno_x",
+  "instagram_tx",
+  "tiktok",
+  "reference_someone",
+  "follower_sir_faheem",
+  "repeat",
+  "wom",
+  "alumni_groups",
+  "whatsapp_channel",
+  "ad",
+  "gmb",
+  "website",
+  "other",
+];
+
+const ALLOWED_AD_PLATFORMS = [
+  "facebook",
+  "instagram",
+  "tiktok",
+  "google",
+  "youtube",
+  "linkedin",
+  "other",
+];
+
+const ALLOWED_PROFESSIONS = [
+  "student",
+  "freelancer",
+  "agency_software_house",
+  "local_business",
+  "ecommerce",
+  "other",
+];
+
+/* ============================================================
    GET /api/customers
    Query params:
-     ?search=       -> name, email, phone, customer_code, company_name
-     ?status=       -> active | inactive | blocked
-     ?customer_type=-> individual | business | government | reseller
-     ?page=         -> default 1
-     ?limit=        -> default 50 (max 200)
-     ?all=          -> if "1", return up to 1000 for dropdowns
+     ?search=          -> name, email, phone, customer_code, company_name
+     ?status=          -> active | inactive | blocked
+     ?customer_type=   -> individual | business | government | reseller
+     ?source=          -> fb_page_techno_x | instagram_tx | ... | other
+     ?profession=      -> student | freelancer | ... | other
+     ?page=            -> default 1
+     ?limit=           -> default 50 (max 200)
+     ?all=             -> if "1", return up to 1000 for dropdowns
 ============================================================ */
 export async function GET(req: NextRequest) {
   try {
@@ -58,6 +99,8 @@ export async function GET(req: NextRequest) {
     const search = searchParams.get("search")?.trim() || "";
     const status = searchParams.get("status")?.trim() || "";
     const customerType = searchParams.get("customer_type")?.trim() || "";
+    const source = searchParams.get("source")?.trim() || "";
+    const profession = searchParams.get("profession")?.trim() || "";
     const all = searchParams.get("all") === "1";
 
     const page = all
@@ -89,6 +132,14 @@ export async function GET(req: NextRequest) {
     if (customerType) {
       where.push("c.customer_type = ?");
       params.push(customerType);
+    }
+    if (source) {
+      where.push("c.source = ?");
+      params.push(source);
+    }
+    if (profession) {
+      where.push("c.profession = ?");
+      params.push(profession);
     }
 
     const whereSql = where.join(" AND ");
@@ -131,6 +182,11 @@ export async function GET(req: NextRequest) {
         c.status,
         c.notes,
         c.created_at,
+        c.source,
+        c.source_other,
+        c.source_ad_platform,
+        c.profession,
+        c.profession_other,
         b.name AS branch_name,
         u.name AS assigned_name,
         (SELECT COUNT(*) FROM customer_contacts cc WHERE cc.customer_id = c.id) AS contact_count
@@ -199,6 +255,55 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    /* ---- Validate source ---- */
+    let source: string | null = null;
+    if (body.source) {
+      const s = String(body.source).trim();
+      if (!ALLOWED_SOURCES.includes(s)) {
+        return NextResponse.json(
+          { error: "Invalid source value" },
+          { status: 400 }
+        );
+      }
+      source = s;
+    }
+
+    /* ---- Validate ad platform (only if source === 'ad') ---- */
+    let sourceAdPlatform: string | null = null;
+    if (source === "ad" && body.source_ad_platform) {
+      const p = String(body.source_ad_platform).trim();
+      if (!ALLOWED_AD_PLATFORMS.includes(p)) {
+        return NextResponse.json(
+          { error: "Invalid ad platform value" },
+          { status: 400 }
+        );
+      }
+      sourceAdPlatform = p;
+    }
+
+    /* ---- Validate profession ---- */
+    let profession: string | null = null;
+    if (body.profession) {
+      const p = String(body.profession).trim();
+      if (!ALLOWED_PROFESSIONS.includes(p)) {
+        return NextResponse.json(
+          { error: "Invalid profession value" },
+          { status: 400 }
+        );
+      }
+      profession = p;
+    }
+
+    /* ---- Free-text "other" fields ---- */
+    const sourceOther =
+      source === "other" && body.source_other
+        ? String(body.source_other).trim()
+        : null;
+    const professionOther =
+      profession === "other" && body.profession_other
+        ? String(body.profession_other).trim()
+        : null;
+
     await conn.beginTransaction();
 
     const customerCode = await generateCustomerCode(
@@ -216,9 +321,14 @@ export async function POST(req: NextRequest) {
          profession_id, source_id, assigned_to,
          credit_limit, credit_days, opening_balance, balance_type, current_balance, currency_code,
          tax_exempt, default_tax_rate,
-         status, notes, created_by, updated_by)
+         status, notes,
+         source, source_other, source_ad_platform,
+         profession, profession_other,
+         created_by, updated_by)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+               ?, ?, ?, ?, ?,
+               ?, ?)`,
       [
         authUser.company_id,
         body.branch_id ? Number(body.branch_id) : authUser.branch_id || null,
@@ -255,6 +365,11 @@ export async function POST(req: NextRequest) {
         Number(body.default_tax_rate ?? 0),
         body.status || "active",
         body.notes ? String(body.notes).trim() : null,
+        source,
+        sourceOther,
+        sourceAdPlatform,
+        profession,
+        professionOther,
         authUser.id,
         authUser.id,
       ]
@@ -277,7 +392,12 @@ export async function POST(req: NextRequest) {
           authUser.company_id,
           authUser.id,
           customerId,
-          JSON.stringify({ name, customer_code: customerCode }),
+          JSON.stringify({
+            name,
+            customer_code: customerCode,
+            source,
+            profession,
+          }),
           ip,
           ua ? ua.slice(0, 500) : null,
         ]
