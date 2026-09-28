@@ -45,6 +45,21 @@ interface Pagination {
   total_pages: number;
 }
 
+interface CustomerOption {
+  id: number;
+  customer_code: string;
+  name: string;
+  phone: string | null;
+  company_name: string | null;
+}
+
+interface UserOption {
+  id: number;
+  name: string;
+  email: string;
+  role_name: string | null;
+}
+
 interface WarrantyForm {
   warranty_source: string;
   model: string;
@@ -246,6 +261,38 @@ function TicketsContent() {
   const [initialType, setInitialType] = useState<"general" | "warranty">(
     "general"
   );
+
+  /* ---- Shared dropdown data (loaded once, reused by modal) ---- */
+  const [customers, setCustomers] = useState<CustomerOption[]>([]);
+  const [users, setUsers] = useState<UserOption[]>([]);
+  const [optionsLoaded, setOptionsLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [custRes, userRes] = await Promise.all([
+          fetch("/api/customers?all=1", { credentials: "include" }),
+          fetch("/api/customers?all=1", { credentials: "include" }),
+        ]);
+        if (custRes.ok) {
+          const j = await custRes.json();
+          if (!cancelled) setCustomers(j.data || []);
+        }
+        if (userRes.ok) {
+          const j = await userRes.json();
+          if (!cancelled) setUsers(j.data || []);
+        }
+      } catch {
+        /* ignore */
+      } finally {
+        if (!cancelled) setOptionsLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const fetchTickets = useCallback(async () => {
     setLoading(true);
@@ -661,6 +708,9 @@ function TicketsContent() {
         <TicketModal
           ticket={editingTicket}
           initialType={initialType}
+          customers={customers}
+          users={users}
+          optionsLoaded={optionsLoaded}
           onClose={() => setShowModal(false)}
           onSaved={() => {
             setShowModal(false);
@@ -678,11 +728,17 @@ function TicketsContent() {
 function TicketModal({
   ticket,
   initialType,
+  customers,
+  users,
+  optionsLoaded,
   onClose,
   onSaved,
 }: {
   ticket: TicketRow | null;
   initialType: "general" | "warranty";
+  customers: CustomerOption[];
+  users: UserOption[];
+  optionsLoaded: boolean;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -695,12 +751,17 @@ function TicketModal({
     ticketType === "warranty" ? "warranty" : "details"
   );
 
-  const [subject, setSubject] = useState(ticket?.subject || "");
-  const [description, setDescription] = useState(ticket?.description || "");
+  /* ---- Customer link + manual fallback ---- */
+  const [customerId, setCustomerId] = useState(
+    ticket?.customer_id != null ? String(ticket.customer_id) : ""
+  );
   const [customerName, setCustomerName] = useState(ticket?.customer_name || "");
   const [customerPhone, setCustomerPhone] = useState(
     ticket?.customer_phone || ""
   );
+
+  const [subject, setSubject] = useState(ticket?.subject || "");
+  const [description, setDescription] = useState(ticket?.description || "");
   const [category, setCategory] = useState(ticket?.category || "");
   const [priority, setPriority] = useState<string>(
     ticket?.priority || "medium"
@@ -713,6 +774,20 @@ function TicketModal({
 
   const [warranty, setWarranty] = useState<WarrantyForm>(EMPTY_WARRANTY);
 
+  /* ============================================================
+     AUTO-FILL: when customerId changes, fill name + phone
+     Only trigger when it's a real selection (not initial mount with "")
+  ============================================================ */
+  useEffect(() => {
+    if (!customerId) return;
+    const c = customers.find((x) => String(x.id) === customerId);
+    if (c) {
+      setCustomerName(c.name);
+      setCustomerPhone(c.phone || "");
+    }
+  }, [customerId, customers]);
+
+  /* ---- Load warranty details on edit ---- */
   useEffect(() => {
     if (!isEdit || !ticket || ticket.ticket_type !== "warranty") return;
     (async () => {
@@ -790,6 +865,13 @@ function TicketModal({
     });
   };
 
+  /* ---- Clear linked customer (switch to manual walk-in) ---- */
+  const clearCustomer = () => {
+    setCustomerId("");
+    setCustomerName("");
+    setCustomerPhone("");
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
@@ -805,6 +887,7 @@ function TicketModal({
         ticket_type: ticketType,
         subject: subject.trim(),
         description: description.trim() || null,
+        customer_id: customerId ? Number(customerId) : null,
         customer_name: customerName.trim() || null,
         customer_phone: customerPhone.trim() || null,
         category: category.trim() || null,
@@ -959,6 +1042,80 @@ function TicketModal({
 
             {tab === "details" && (
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                {/* ============ CUSTOMER LINK ============ */}
+                <div className="sm:col-span-2">
+                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                    Link customer{" "}
+                    <span className="text-gray-400">(optional)</span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={customerId}
+                      onChange={(e) => setCustomerId(e.target.value)}
+                      disabled={!optionsLoaded}
+                      className={`${inputCls} flex-1`}
+                    >
+                      <option value="">
+                        {optionsLoaded
+                          ? "— Walk-in / no linked customer —"
+                          : "Loading customers…"}
+                      </option>
+                      {customers.map((c) => (
+                        <option key={c.id} value={String(c.id)}>
+                          {c.customer_code} · {c.name}
+                          {c.phone ? ` (${c.phone})` : ""}
+                        </option>
+                      ))}
+                    </select>
+                    {customerId && (
+                      <button
+                        type="button"
+                        onClick={clearCustomer}
+                        className="shrink-0 rounded-md border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
+                        title="Clear linked customer"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                  <p className="mt-1 text-[11px] text-gray-400">
+                    Selecting a customer auto-fills name and phone. Leave as
+                    "Walk-in" for one-off customers.
+                  </p>
+                </div>
+
+                {/* ============ CUSTOMER NAME + PHONE (auto-filled) ============ */}
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                    Customer name
+                  </label>
+                  <input
+                    type="text"
+                    value={customerName}
+                    onChange={(e) => setCustomerName(e.target.value)}
+                    placeholder="Walk-in customer"
+                    readOnly={!!customerId}
+                    className={`${inputCls} ${
+                      customerId ? "bg-gray-50 text-gray-600" : ""
+                    }`}
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                    Customer phone
+                  </label>
+                  <input
+                    type="text"
+                    value={customerPhone}
+                    onChange={(e) => setCustomerPhone(e.target.value)}
+                    placeholder="+92 300 0000000"
+                    readOnly={!!customerId}
+                    className={`${inputCls} ${
+                      customerId ? "bg-gray-50 text-gray-600" : ""
+                    }`}
+                  />
+                </div>
+
                 <div className="sm:col-span-2">
                   <label className="mb-1.5 block text-xs font-medium text-gray-700">
                     Subject <span className="text-red-500">*</span>
@@ -982,31 +1139,6 @@ function TicketModal({
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
                     placeholder="Describe the issue in detail"
-                    className={inputCls}
-                  />
-                </div>
-
-                <div>
-                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
-                    Customer name
-                  </label>
-                  <input
-                    type="text"
-                    value={customerName}
-                    onChange={(e) => setCustomerName(e.target.value)}
-                    placeholder="Walk-in customer"
-                    className={inputCls}
-                  />
-                </div>
-                <div>
-                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
-                    Customer phone
-                  </label>
-                  <input
-                    type="text"
-                    value={customerPhone}
-                    onChange={(e) => setCustomerPhone(e.target.value)}
-                    placeholder="+92 300 0000000"
                     className={inputCls}
                   />
                 </div>
@@ -1057,15 +1189,24 @@ function TicketModal({
                 </div>
                 <div>
                   <label className="mb-1.5 block text-xs font-medium text-gray-700">
-                    Assigned to (user ID)
+                    Assigned to
                   </label>
-                  <input
-                    type="text"
+                  <select
                     value={assignedTo}
                     onChange={(e) => setAssignedTo(e.target.value)}
-                    placeholder="Optional"
+                    disabled={!optionsLoaded}
                     className={inputCls}
-                  />
+                  >
+                    <option value="">
+                      {optionsLoaded ? "— Unassigned —" : "Loading users…"}
+                    </option>
+                    {users.map((u) => (
+                      <option key={u.id} value={String(u.id)}>
+                        {u.name}
+                        {u.role_name ? ` · ${u.role_name}` : ""}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 <div>
@@ -1085,6 +1226,44 @@ function TicketModal({
             {tab === "warranty" && ticketType === "warranty" && (
               <div className="space-y-6">
                 <SectionTitle n={1} title="Customer Details" />
+
+                {/* Link customer (also here in warranty tab) */}
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                    Link customer{" "}
+                    <span className="text-gray-400">(optional)</span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={customerId}
+                      onChange={(e) => setCustomerId(e.target.value)}
+                      disabled={!optionsLoaded}
+                      className={`${inputCls} flex-1`}
+                    >
+                      <option value="">
+                        {optionsLoaded
+                          ? "— Walk-in / no linked customer —"
+                          : "Loading customers…"}
+                      </option>
+                      {customers.map((c) => (
+                        <option key={c.id} value={String(c.id)}>
+                          {c.customer_code} · {c.name}
+                          {c.phone ? ` (${c.phone})` : ""}
+                        </option>
+                      ))}
+                    </select>
+                    {customerId && (
+                      <button
+                        type="button"
+                        onClick={clearCustomer}
+                        className="shrink-0 rounded-md border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <div>
                     <label className="mb-1.5 block text-xs font-medium text-gray-700">
@@ -1094,7 +1273,10 @@ function TicketModal({
                       type="text"
                       value={customerName}
                       onChange={(e) => setCustomerName(e.target.value)}
-                      className={inputCls}
+                      readOnly={!!customerId}
+                      className={`${inputCls} ${
+                        customerId ? "bg-gray-50 text-gray-600" : ""
+                      }`}
                     />
                   </div>
                   <div>
@@ -1105,10 +1287,13 @@ function TicketModal({
                       type="text"
                       value={customerPhone}
                       onChange={(e) => setCustomerPhone(e.target.value)}
-                      className={inputCls}
+                      readOnly={!!customerId}
+                      className={`${inputCls} ${
+                        customerId ? "bg-gray-50 text-gray-600" : ""
+                      }`}
                     />
                   </div>
-                  <div>
+                  <div className="sm:col-span-2">
                     <label className="mb-1.5 block text-xs font-medium text-gray-700">
                       Source
                     </label>
@@ -1187,7 +1372,8 @@ function TicketModal({
                   </div>
                   <div className="sm:col-span-2">
                     <label className="mb-1.5 block text-xs font-medium text-gray-700">
-                      Accessories Received                    </label>
+                      Accessories Received
+                    </label>
                     <input
                       type="text"
                       value={warranty.accessories_received}
