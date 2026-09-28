@@ -38,6 +38,12 @@ interface CustomerRow {
   branch_name: string | null;
   assigned_name: string | null;
   contact_count: number;
+  // NEW FIELDS
+  source: string | null;
+  source_other: string | null;
+  source_ad_platform: string | null;
+  profession: string | null;
+  profession_other: string | null;
 }
 
 interface Pagination {
@@ -65,6 +71,47 @@ const TYPE_LABEL: Record<string, string> = {
   government: "Government",
   reseller: "Reseller",
 };
+
+/* ---- SOURCE OPTIONS ---- */
+const SOURCE_OPTIONS = [
+  { value: "", label: "Select source" },
+  { value: "fb_page_techno_x", label: "FB Page Techno X" },
+  { value: "instagram_tx", label: "Instagram TX" },
+  { value: "tiktok", label: "TikTok" },
+  { value: "reference_someone", label: "Reference of Someone" },
+  { value: "follower_sir_faheem", label: "Follower of Sir Faheem" },
+  { value: "repeat", label: "Repeat" },
+  { value: "wom", label: "WOM (Word of Mouth)" },
+  { value: "alumni_groups", label: "Alumni Groups" },
+  { value: "whatsapp_channel", label: "WhatsApp Channel" },
+  { value: "ad", label: "Ad" },
+  { value: "gmb", label: "GMB (Google My Business)" },
+  { value: "website", label: "Website" },
+  { value: "other", label: "Other" },
+];
+
+/* ---- AD PLATFORM OPTIONS ---- */
+const AD_PLATFORM_OPTIONS = [
+  { value: "", label: "Select platform" },
+  { value: "facebook", label: "Facebook" },
+  { value: "instagram", label: "Instagram" },
+  { value: "tiktok", label: "TikTok" },
+  { value: "google", label: "Google" },
+  { value: "youtube", label: "YouTube" },
+  { value: "linkedin", label: "LinkedIn" },
+  { value: "other", label: "Other" },
+];
+
+/* ---- PROFESSION OPTIONS ---- */
+const PROFESSION_OPTIONS = [
+  { value: "", label: "Select profession" },
+  { value: "student", label: "Student" },
+  { value: "freelancer", label: "Freelancer" },
+  { value: "agency_software_house", label: "Agency or Software House" },
+  { value: "local_business", label: "Local Business" },
+  { value: "ecommerce", label: "E-Commerce" },
+  { value: "other", label: "Other" },
+];
 
 function formatCurrency(n: number, currency = "PKR"): string {
   if (currency === "PKR") {
@@ -154,6 +201,8 @@ function CustomersContent() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
+  const [sourceFilter, setSourceFilter] = useState("");
+  const [professionFilter, setProfessionFilter] = useState("");
   const [page, setPage] = useState(1);
 
   const [showModal, setShowModal] = useState(false);
@@ -169,6 +218,8 @@ function CustomersContent() {
       if (search) params.set("search", search);
       if (statusFilter) params.set("status", statusFilter);
       if (typeFilter) params.set("customer_type", typeFilter);
+      if (sourceFilter) params.set("source", sourceFilter);
+      if (professionFilter) params.set("profession", professionFilter);
       params.set("page", String(page));
       params.set("limit", "50");
 
@@ -193,7 +244,7 @@ function CustomersContent() {
     } finally {
       setLoading(false);
     }
-  }, [search, statusFilter, typeFilter, page]);
+  }, [search, statusFilter, typeFilter, sourceFilter, professionFilter, page]);
 
   useEffect(() => {
     const timer = setTimeout(fetchCustomers, 250);
@@ -202,7 +253,7 @@ function CustomersContent() {
 
   useEffect(() => {
     setPage(1);
-  }, [search, statusFilter, typeFilter]);
+  }, [search, statusFilter, typeFilter, sourceFilter, professionFilter]);
 
   const handleDelete = async (c: CustomerRow) => {
     if (
@@ -237,12 +288,15 @@ function CustomersContent() {
     setShowModal(true);
   };
 
-  const hasFilters = !!search || !!statusFilter || !!typeFilter;
+  const hasFilters =
+    !!search || !!statusFilter || !!typeFilter || !!sourceFilter || !!professionFilter;
 
   const resetFilters = () => {
     setSearch("");
     setStatusFilter("");
     setTypeFilter("");
+    setSourceFilter("");
+    setProfessionFilter("");
     setPage(1);
   };
 
@@ -310,6 +364,30 @@ function CustomersContent() {
             <option value="blocked">Blocked</option>
           </select>
 
+          <select
+            value={sourceFilter}
+            onChange={(e) => setSourceFilter(e.target.value)}
+            className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-[#17D65D] focus:ring-2 focus:ring-[#17D65D]/20"
+          >
+            {SOURCE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.value === "" ? "All sources" : opt.label}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={professionFilter}
+            onChange={(e) => setProfessionFilter(e.target.value)}
+            className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-[#17D65D] focus:ring-2 focus:ring-[#17D65D]/20"
+          >
+            {PROFESSION_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.value === "" ? "All professions" : opt.label}
+              </option>
+            ))}
+          </select>
+
           {hasFilters && (
             <button
               onClick={resetFilters}
@@ -359,6 +437,12 @@ function CustomersContent() {
                 <th className="hidden px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500 xl:table-cell">
                   Balance
                 </th>
+                <th className="hidden px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500 xl:table-cell">
+                  Source
+                </th>
+                <th className="hidden px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500 xl:table-cell">
+                  Profession
+                </th>
                 <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
                   Status
                 </th>
@@ -371,14 +455,14 @@ function CustomersContent() {
               {loading ? (
                 Array.from({ length: 5 }).map((_, i) => (
                   <tr key={i}>
-                    <td colSpan={6} className="px-4 py-3">
+                    <td colSpan={8} className="px-4 py-3">
                       <div className="h-6 animate-pulse rounded bg-gray-100" />
                     </td>
                   </tr>
                 ))
               ) : error ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-12 text-center">
+                  <td colSpan={8} className="px-4 py-12 text-center">
                     <p className="text-sm text-gray-600">{error}</p>
                     <button
                       onClick={fetchCustomers}
@@ -390,7 +474,7 @@ function CustomersContent() {
                 </tr>
               ) : customers.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-12 text-center">
+                  <td colSpan={8} className="px-4 py-12 text-center">
                     <p className="text-sm text-gray-500">
                       {hasFilters
                         ? "No customers match your filters."
@@ -459,6 +543,46 @@ function CustomersContent() {
                           c.currency_code
                         )}
                       </div>
+                    </td>
+                    <td className="hidden whitespace-nowrap px-4 py-3.5 xl:table-cell">
+                      {c.source ? (
+                        <div className="text-sm text-gray-700">
+                          {SOURCE_OPTIONS.find(
+                            (o) => o.value === c.source
+                          )?.label || c.source}
+                          {c.source === "ad" && c.source_ad_platform && (
+                            <span className="ml-1 text-xs text-gray-400">
+                              ({AD_PLATFORM_OPTIONS.find(
+                                (o) => o.value === c.source_ad_platform
+                              )?.label || c.source_ad_platform})
+                            </span>
+                          )}
+                          {c.source === "other" && c.source_other && (
+                            <span className="ml-1 text-xs text-gray-400">
+                              ({c.source_other})
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-gray-400">—</span>
+                      )}
+                    </td>
+                    <td className="hidden whitespace-nowrap px-4 py-3.5 xl:table-cell">
+                      {c.profession ? (
+                        <div className="text-sm text-gray-700">
+                          {PROFESSION_OPTIONS.find(
+                            (o) => o.value === c.profession
+                          )?.label || c.profession}
+                          {c.profession === "other" &&
+                            c.profession_other && (
+                              <span className="ml-1 text-xs text-gray-400">
+                                ({c.profession_other})
+                              </span>
+                            )}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-gray-400">—</span>
+                      )}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3.5">
                       <span
@@ -580,6 +704,21 @@ function CustomerModal({
   const [whatsapp, setWhatsapp] = useState(customer?.whatsapp || "");
   const [taxNumber, setTaxNumber] = useState(customer?.tax_number || "");
 
+  /* ---- NEW: Source ---- */
+  const [source, setSource] = useState(customer?.source || "");
+  const [sourceOther, setSourceOther] = useState(
+    customer?.source_other || ""
+  );
+  const [sourceAdPlatform, setSourceAdPlatform] = useState(
+    customer?.source_ad_platform || ""
+  );
+
+  /* ---- NEW: Profession ---- */
+  const [profession, setProfession] = useState(customer?.profession || "");
+  const [professionOther, setProfessionOther] = useState(
+    customer?.profession_other || ""
+  );
+
   /* ---- Addresses ---- */
   const [billingAddress, setBillingAddress] = useState(
     customer?.billing_address || ""
@@ -641,12 +780,22 @@ function CustomerModal({
         phone: phone.trim() || null,
         whatsapp: whatsapp.trim() || null,
         tax_number: taxNumber.trim() || null,
+        // NEW FIELDS
+        source: source || null,
+        source_other: source === "other" ? sourceOther.trim() || null : null,
+        source_ad_platform:
+          source === "ad" ? sourceAdPlatform || null : null,
+        profession: profession || null,
+        profession_other:
+          profession === "other" ? professionOther.trim() || null : null,
+        // ADDRESSES
         billing_address: billingAddress.trim() || null,
         shipping_address: shippingAddress.trim() || null,
         city: city.trim() || null,
         state: state.trim() || null,
         country: country.trim() || "Pakistan",
         postal_code: postalCode.trim() || null,
+        // FINANCIAL
         credit_limit: Number(creditLimit) || 0,
         credit_days: Number(creditDays) || 0,
         opening_balance: Number(openingBalance) || 0,
@@ -842,6 +991,103 @@ function CustomerModal({
                     placeholder="Optional"
                     className={inputCls}
                   />
+                </div>
+
+                {/* ============ SOURCE DROPDOWN ============ */}
+                <div className="sm:col-span-2">
+                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                    Source
+                  </label>
+                  <select
+                    value={source}
+                    onChange={(e) => {
+                      setSource(e.target.value);
+                      if (e.target.value !== "other") setSourceOther("");
+                      if (e.target.value !== "ad") setSourceAdPlatform("");
+                    }}
+                    className={inputCls}
+                  >
+                    {SOURCE_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+
+                  {/* Conditional: Ad platform sub-dropdown */}
+                  {source === "ad" && (
+                    <div className="mt-3">
+                      <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                        Ad platform
+                      </label>
+                      <select
+                        value={sourceAdPlatform}
+                        onChange={(e) =>
+                          setSourceAdPlatform(e.target.value)
+                        }
+                        className={inputCls}
+                      >
+                        {AD_PLATFORM_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {/* Conditional: Other source text */}
+                  {source === "other" && (
+                    <div className="mt-3">
+                      <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                        Please specify source
+                      </label>
+                      <input
+                        type="text"
+                        value={sourceOther}
+                        onChange={(e) => setSourceOther(e.target.value)}
+                        placeholder="e.g. Seminar, Walk-in, etc."
+                        className={inputCls}
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {/* ============ PROFESSION DROPDOWN ============ */}
+                <div className="sm:col-span-2">
+                  <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                    Profession
+                  </label>
+                  <select
+                    value={profession}
+                    onChange={(e) => {
+                      setProfession(e.target.value);
+                      if (e.target.value !== "other") setProfessionOther("");
+                    }}
+                    className={inputCls}
+                  >
+                    {PROFESSION_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+
+                  {/* Conditional: Other profession text */}
+                  {profession === "other" && (
+                    <div className="mt-3">
+                      <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                        Please specify profession
+                      </label>
+                      <input
+                        type="text"
+                        value={professionOther}
+                        onChange={(e) => setProfessionOther(e.target.value)}
+                        placeholder="e.g. Doctor, Teacher, etc."
+                        className={inputCls}
+                      />
+                    </div>
+                  )}
                 </div>
 
                 <div>
