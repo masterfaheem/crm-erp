@@ -1,0 +1,1749 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Navbar from "@/app/components/Navbar";
+
+/* ============================================================
+   TYPES
+============================================================ */
+interface Customer {
+  id: number;
+  customer_code: string;
+  customer_type: "individual" | "business";
+  name: string;
+  company_name: string | null;
+  email: string | null;
+  phone: string | null;
+  whatsapp: string | null;
+  tax_number: string | null;
+  billing_address: string | null;
+  city: string | null;
+  state: string | null;
+  country: string | null;
+  postal_code: string | null;
+  current_balance: number;
+  balance_type: "debit" | "credit";
+  credit_limit: number;
+  credit_days: number;
+  currency_code: string;
+  status: "active" | "inactive";
+}
+
+interface Product {
+  id: number;
+  sku: string;
+  barcode: string | null;
+  name: string;
+  description: string | null;
+  product_type: "product" | "service";
+  purchase_price: number;
+  sale_price: number;
+  wholesale_price: number;
+  tax_rate: number;
+  discount_percent: number;
+  current_stock: number;
+  unit_name: string | null;
+  unit_short_name: string | null;
+  category_name: string | null;
+  category_color: string | null;
+  status: string;
+}
+
+interface CartItem {
+  key: string;
+  product_id: number;
+  name: string;
+  sku: string;
+  barcode: string | null;
+  unit_short_name: string;
+  category_name: string | null;
+  quantity: number;
+  unit_price: number;
+  tax_rate: number;
+  discount_percent: number;
+  line_total: number;
+  available_stock: number;
+}
+
+interface InvoiceResult {
+  id: number;
+  invoice_number: string;
+  customer_name: string;
+  grand_total: number;
+  paid_amount: number;
+  change_due: number;
+  payment_method: string;
+  created_at: string;
+}
+
+/* ============================================================
+   HELPERS
+============================================================ */
+const inputCls =
+  "w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-[#17D65D] focus:ring-2 focus:ring-[#17D65D]/20";
+
+const btnPrimary =
+  "inline-flex items-center justify-center gap-2 rounded-md bg-[#17D65D] px-4 py-2 text-sm font-medium text-black shadow-sm transition hover:bg-[#15c455] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50";
+
+function formatCurrency(n: number, currency = "PKR"): string {
+  const code = currency === "PKR" ? "Rs " : currency + " ";
+  return (
+    code +
+    (Number(n) || 0).toLocaleString("en-PK", { maximumFractionDigits: 2 })
+  );
+}
+
+function genKey(): string {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+function computeLineTotal(item: {
+  quantity: number;
+  unit_price: number;
+  tax_rate: number;
+  discount_percent: number;
+}): number {
+  const gross = (Number(item.quantity) || 0) * (Number(item.unit_price) || 0);
+  const discount = gross * ((Number(item.discount_percent) || 0) / 100);
+  const taxable = gross - discount;
+  const tax = taxable * ((Number(item.tax_rate) || 0) / 100);
+  return Math.round((taxable + tax) * 100) / 100;
+}
+
+function stockColor(stock: number): string {
+  if (stock <= 0) return "text-red-600";
+  if (stock <= 10) return "text-amber-600";
+  return "text-gray-500";
+}
+
+/* ============================================================
+   PAGE
+============================================================ */
+export default function POSPage() {
+  return (
+    <>
+      <Navbar />
+      <POSMain />
+    </>
+  );
+}
+
+function POSMain() {
+  const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    const read = () => {
+      try {
+        setCollapsed(localStorage.getItem("erp_sidebar_collapsed") === "true");
+      } catch {
+        /* ignore */
+      }
+    };
+    read();
+    const onCustom = () => read();
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === "erp_sidebar_collapsed") read();
+    };
+    window.addEventListener("erp:sidebar-collapse", onCustom);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener("erp:sidebar-collapse", onCustom);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
+
+  return (
+    <main
+      className={`min-h-screen bg-gray-50 pt-16 transition-[padding] duration-200 ease-out ${
+        collapsed ? "lg:pl-[72px]" : "lg:pl-64"
+      }`}
+    >
+      <div className="mx-auto max-w-[1600px] p-4 sm:p-6">
+        <POSContent />
+      </div>
+    </main>
+  );
+}
+
+/* ============================================================
+   CONTENT
+============================================================ */
+function POSContent() {
+  /* ---------- Customer state ---------- */
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(
+    null
+  );
+
+  /* ---------- Cart state ---------- */
+  const [cart, setCart] = useState<CartItem[]>([]);
+
+  /* ---------- Order-level state ---------- */
+  const [orderDiscountPercent, setOrderDiscountPercent] = useState(0);
+  const [shippingFee, setShippingFee] = useState(0);
+  const [paymentMethod, setPaymentMethod] = useState("cash");
+  const [amountPaid, setAmountPaid] = useState<string>("");
+  const [notes, setNotes] = useState("");
+  const [reference, setReference] = useState("");
+
+  /* ---------- UI state ---------- */
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [showSuccess, setShowSuccess] = useState<InvoiceResult | null>(null);
+  const [showCheckout, setShowCheckout] = useState(false);
+
+  /* ---------- Cart ops ---------- */
+  const addToCart = useCallback((product: Product) => {
+    setCart((prev) => {
+      const existing = prev.find((x) => x.product_id === product.id);
+      if (existing) {
+        if (product.product_type === "product" && existing.quantity + 1 > product.current_stock) {
+          // allow overselling for service-type only
+          return prev;
+        }
+        return prev.map((x) =>
+          x.product_id === product.id
+            ? {
+                ...x,
+                quantity: x.quantity + 1,
+                line_total: computeLineTotal({
+                  ...x,
+                  quantity: x.quantity + 1,
+                }),
+              }
+            : x
+        );
+      }
+      const item: CartItem = {
+        key: genKey(),
+        product_id: product.id,
+        name: product.name,
+        sku: product.sku,
+        barcode: product.barcode,
+        unit_short_name: product.unit_short_name || "pcs",
+        category_name: product.category_name,
+        quantity: 1,
+        unit_price: Number(product.sale_price) || 0,
+        tax_rate: Number(product.tax_rate) || 0,
+        discount_percent: Number(product.discount_percent) || 0,
+        available_stock: Number(product.current_stock) || 0,
+        line_total: 0,
+      };
+      item.line_total = computeLineTotal(item);
+      return [...prev, item];
+    });
+  }, []);
+
+  const updateCartItem = (key: string, patch: Partial<CartItem>) => {
+    setCart((prev) =>
+      prev.map((it) => {
+        if (it.key !== key) return it;
+        const next = { ...it, ...patch };
+        next.line_total = computeLineTotal(next);
+        return next;
+      })
+    );
+  };
+
+  const removeCartItem = (key: string) =>
+    setCart((prev) => prev.filter((it) => it.key !== key));
+
+  const changeQty = (key: string, delta: number) => {
+    setCart((prev) =>
+      prev.map((it) => {
+        if (it.key !== key) return it;
+        const nextQty = Math.max(1, it.quantity + delta);
+        const next = { ...it, quantity: nextQty };
+        next.line_total = computeLineTotal(next);
+        return next;
+      })
+    );
+  };
+
+  const clearCart = () => {
+    if (cart.length === 0) return;
+    if (window.confirm("Clear all items from the cart?")) setCart([]);
+  };
+
+  /* ---------- Totals ---------- */
+  const totals = useMemo(() => {
+    const subtotal = cart.reduce((acc, it) => {
+      const gross = it.quantity * it.unit_price;
+      const discount = gross * (it.discount_percent / 100);
+      return acc + (gross - discount);
+    }, 0);
+
+    const itemDiscountTotal = cart.reduce((acc, it) => {
+      const gross = it.quantity * it.unit_price;
+      return acc + gross * (it.discount_percent / 100);
+    }, 0);
+
+    const taxTotal = cart.reduce((acc, it) => {
+      const gross = it.quantity * it.unit_price;
+      const discount = gross * (it.discount_percent / 100);
+      return acc + (gross - discount) * (it.tax_rate / 100);
+    }, 0);
+
+    // Order-level discount applied on (subtotal + tax)
+    const orderDiscountAmt =
+      (subtotal + taxTotal) * (orderDiscountPercent / 100);
+
+    const grandTotal =
+      subtotal + taxTotal - orderDiscountAmt + (Number(shippingFee) || 0);
+
+    const totalQty = cart.reduce((acc, it) => acc + it.quantity, 0);
+
+    return {
+      subtotal,
+      itemDiscountTotal,
+      taxTotal,
+      orderDiscountAmt,
+      shipping: Number(shippingFee) || 0,
+      grandTotal: Math.max(0, grandTotal),
+      totalQty,
+      itemCount: cart.length,
+    };
+  }, [cart, orderDiscountPercent, shippingFee]);
+
+  const paid = Number(amountPaid) || 0;
+  const changeDue = Math.max(0, paid - totals.grandTotal);
+  const balanceDue = Math.max(0, totals.grandTotal - paid);
+
+  /* ---------- Submit ---------- */
+  const handleSubmit = async () => {
+    setError("");
+    if (!selectedCustomer) {
+      setError("Please select a customer.");
+      return;
+    }
+    if (cart.length === 0) {
+      setError("Cart is empty.");
+      return;
+    }
+    if (paid > 0 && paid < totals.grandTotal && paymentMethod === "cash") {
+      if (
+        !window.confirm(
+          `Amount paid (${formatCurrency(paid)}) is less than total (${formatCurrency(
+            totals.grandTotal
+          )}). Save as partial payment?`
+        )
+      )
+        return;
+    }
+
+    setSaving(true);
+    try {
+      const payload = {
+        customer_id: selectedCustomer.id,
+        invoice_date: new Date().toISOString().slice(0, 10),
+        reference: reference.trim() || null,
+        notes: notes.trim() || null,
+        payment_method: paymentMethod,
+        amount_paid: paid,
+        order_discount_percent: Number(orderDiscountPercent) || 0,
+        shipping_fee: Number(shippingFee) || 0,
+        subtotal: Math.round(totals.subtotal * 100) / 100,
+        item_discount_total:
+          Math.round(totals.itemDiscountTotal * 100) / 100,
+        order_discount_amount:
+          Math.round(totals.orderDiscountAmt * 100) / 100,
+        tax_total: Math.round(totals.taxTotal * 100) / 100,
+        shipping_total: Math.round(totals.shipping * 100) / 100,
+        grand_total: Math.round(totals.grandTotal * 100) / 100,
+        items: cart.map((it) => ({
+          product_id: it.product_id,
+          quantity: Number(it.quantity) || 0,
+          unit_price: Number(it.unit_price) || 0,
+          tax_rate: Number(it.tax_rate) || 0,
+          discount_percent: Number(it.discount_percent) || 0,
+          line_total: computeLineTotal(it),
+        })),
+      };
+
+      const res = await fetch("/api/invoices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(
+          (j as { error?: string }).error || "Failed to create invoice."
+        );
+      }
+
+      const json = await res.json();
+      setShowSuccess({
+        id: json.data?.id ?? 0,
+        invoice_number: json.data?.invoice_number ?? "INV-XXX",
+        customer_name: selectedCustomer.name,
+        grand_total: totals.grandTotal,
+        paid_amount: paid,
+        change_due: changeDue,
+        payment_method: paymentMethod,
+        created_at: new Date().toISOString(),
+      });
+
+      /* reset */
+      setCart([]);
+      setSelectedCustomer(null);
+      setAmountPaid("");
+      setOrderDiscountPercent(0);
+      setShippingFee(0);
+      setNotes("");
+      setReference("");
+      setShowCheckout(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* HEADER */}
+      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+        <div>
+          <h1 className="text-xl font-semibold text-gray-900">
+            Point of Sale
+          </h1>
+          <p className="mt-0.5 text-sm text-gray-500">
+            Create invoices at the counter — stock updates automatically.
+          </p>
+        </div>
+        <div className="flex items-center gap-3 text-xs text-gray-500">
+          <span className="hidden sm:inline">
+            {new Date().toLocaleDateString("en-PK", {
+              weekday: "long",
+              day: "2-digit",
+              month: "short",
+              year: "numeric",
+            })}
+          </span>
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-[#17D65D]/30 bg-[#17D65D]/10 px-2.5 py-1 text-[11px] font-semibold text-[#0fa846]">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#17D65D]" />
+            Register open
+          </span>
+        </div>
+      </div>
+
+      {/* MAIN GRID */}
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+        {/* ============== LEFT: Customer + Products ============== */}
+        <div className="space-y-4 xl:col-span-7">
+          {/* CUSTOMER SEARCH */}
+          <div className="rounded-lg border border-gray-200 bg-white p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-gray-800">
+                Customer
+              </h2>
+              {selectedCustomer && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedCustomer(null)}
+                  className="text-xs font-medium text-gray-500 hover:text-red-600"
+                >
+                  Change
+                </button>
+              )}
+            </div>
+            {selectedCustomer ? (
+              <CustomerCard customer={selectedCustomer} />
+            ) : (
+              <CustomerSearch onSelect={setSelectedCustomer} />
+            )}
+          </div>
+
+          {/* PRODUCT SEARCH */}
+          <div className="rounded-lg border border-gray-200 bg-white p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-gray-800">
+                Products
+              </h2>
+              <span className="text-[11px] text-gray-400">
+                Search by name, SKU, or scan barcode
+              </span>
+            </div>
+            <ProductSearch onAdd={addToCart} cart={cart} />
+          </div>
+        </div>
+
+        {/* ============== RIGHT: Cart / Checkout ============== */}
+        <div className="xl:col-span-5">
+          <div className="sticky top-20 flex flex-col rounded-lg border border-gray-200 bg-white">
+            {/* CART HEADER */}
+            <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <svg
+                  className="h-4 w-4 text-gray-600"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z"
+                  />
+                </svg>
+                <h2 className="text-sm font-semibold text-gray-800">
+                  Current Sale
+                </h2>
+                <span className="rounded-full bg-[#17D65D]/15 px-2 py-0.5 text-[11px] font-semibold text-[#0fa846]">
+                  {totals.itemCount}
+                </span>
+              </div>
+              {cart.length > 0 && (
+                <button
+                  type="button"
+                  onClick={clearCart}
+                  className="text-xs font-medium text-gray-500 hover:text-red-600"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+
+            {/* CART ITEMS */}
+            {cart.length === 0 ? (
+              <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
+                <div className="mb-3 flex h-16 w-16 items-center justify-center rounded-full bg-gray-100">
+                  <svg
+                    className="h-7 w-7 text-gray-400"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z"
+                    />
+                  </svg>
+                </div>
+                <p className="text-sm font-medium text-gray-700">
+                  No items yet
+                </p>
+                <p className="mt-1 text-xs text-gray-500">
+                  Add products from the left to start a sale.
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="max-h-[42vh] overflow-y-auto">
+                  <ul className="divide-y divide-gray-100">
+                    {cart.map((it) => (
+                      <li key={it.key} className="px-4 py-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-sm font-medium text-gray-900">
+                              {it.name}
+                            </div>
+                            <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[11px] text-gray-500">
+                              <span className="font-mono">{it.sku}</span>
+                              <span>·</span>
+                              <span>{formatCurrency(it.unit_price)}</span>
+                              <span>·</span>
+                              <span
+                                className={stockColor(it.available_stock)}
+                              >
+                                Stock: {it.available_stock}
+                              </span>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => removeCartItem(it.key)}
+                            className="rounded p-1 text-gray-400 transition hover:bg-red-50 hover:text-red-600"
+                          >
+                            <svg
+                              className="h-3.5 w-3.5"
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M6 18L18 6M6 6l12 12"
+                              />
+                            </svg>
+                          </button>
+                        </div>
+
+                        {/* Qty + line total */}
+                        <div className="mt-2 flex items-center justify-between">
+                          <div className="inline-flex items-center rounded-md border border-gray-300">
+                            <button
+                              type="button"
+                              onClick={() => changeQty(it.key, -1)}
+                              className="px-2 py-1 text-gray-600 transition hover:bg-gray-50"
+                            >
+                              <svg
+                                className="h-3 w-3"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={3}
+                                  d="M20 12H4"
+                                />
+                              </svg>
+                            </button>
+                            <input
+                              type="number"
+                              min="1"
+                              step="1"
+                              value={it.quantity}
+                              onChange={(e) =>
+                                updateCartItem(it.key, {
+                                  quantity: Math.max(
+                                    1,
+                                    Number(e.target.value) || 1
+                                  ),
+                                })
+                              }
+                              className="w-14 border-x border-gray-300 bg-white px-1 py-1 text-center text-sm outline-none focus:bg-[#17D65D]/5"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => changeQty(it.key, 1)}
+                              className="px-2 py-1 text-gray-600 transition hover:bg-gray-50"
+                            >
+                              <svg
+                                className="h-3 w-3"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={3}
+                                  d="M12 4v16m8-8H4"
+                                />
+                              </svg>
+                            </button>
+                          </div>
+                          <div className="text-sm font-semibold text-gray-900">
+                            {formatCurrency(computeLineTotal(it))}
+                          </div>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                {/* TOTALS */}
+                <div className="space-y-2 border-t border-gray-200 bg-gray-50 px-4 py-3">
+                  <Row label="Subtotal" value={formatCurrency(totals.subtotal)} />
+                  {totals.itemDiscountTotal > 0 && (
+                    <Row
+                      label="Item discount"
+                      value={`− ${formatCurrency(totals.itemDiscountTotal)}`}
+                      muted
+                    />
+                  )}
+                  <Row
+                    label="Tax"
+                    value={formatCurrency(totals.taxTotal)}
+                    muted
+                  />
+
+                  {/* Order discount input */}
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <span className="text-gray-500">Order discount %</span>
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="0.01"
+                      value={orderDiscountPercent}
+                      onChange={(e) =>
+                        setOrderDiscountPercent(Number(e.target.value) || 0)
+                      }
+                      className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-right text-xs outline-none focus:border-[#17D65D]"
+                    />
+                  </div>
+                  {totals.orderDiscountAmt > 0 && (
+                    <Row
+                      label="Order discount"
+                      value={`− ${formatCurrency(totals.orderDiscountAmt)}`}
+                      muted
+                    />
+                  )}
+
+                  {/* Shipping input */}
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <span className="text-gray-500">Shipping</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={shippingFee}
+                      onChange={(e) =>
+                        setShippingFee(Number(e.target.value) || 0)
+                      }
+                      className="w-20 rounded border border-gray-300 bg-white px-2 py-1 text-right text-xs outline-none focus:border-[#17D65D]"
+                    />
+                  </div>
+
+                  <div className="my-1 border-t border-gray-200" />
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-semibold text-gray-700">
+                      Total
+                    </span>
+                    <span className="text-lg font-bold text-[#0fa846]">
+                      {formatCurrency(totals.grandTotal)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* CHECKOUT BUTTON */}
+                <div className="border-t border-gray-200 p-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAmountPaid(String(totals.grandTotal));
+                      setShowCheckout(true);
+                    }}
+                    disabled={!selectedCustomer}
+                    className={`${btnPrimary} w-full py-3 text-base`}
+                  >
+                    <svg
+                      className="h-5 w-5"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"
+                      />
+                    </svg>
+                    Charge {formatCurrency(totals.grandTotal)}
+                  </button>
+                  {!selectedCustomer && (
+                    <p className="mt-2 text-center text-[11px] text-amber-600">
+                      Select a customer to continue
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* CHECKOUT MODAL */}
+      {showCheckout && selectedCustomer && (
+        <CheckoutModal
+          customer={selectedCustomer}
+          totals={totals}
+          paymentMethod={paymentMethod}
+          setPaymentMethod={setPaymentMethod}
+          amountPaid={amountPaid}
+          setAmountPaid={setAmountPaid}
+          changeDue={changeDue}
+          balanceDue={balanceDue}
+          reference={reference}
+          setReference={setReference}
+          notes={notes}
+          setNotes={setNotes}
+          saving={saving}
+          error={error}
+          onClose={() => setShowCheckout(false)}
+          onSubmit={handleSubmit}
+        />
+      )}
+
+      {/* SUCCESS MODAL */}
+      {showSuccess && (
+        <SuccessModal
+          result={showSuccess}
+          onClose={() => setShowSuccess(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   SMALL HELPERS
+============================================================ */
+function Row({
+  label,
+  value,
+  muted,
+}: {
+  label: string;
+  value: string;
+  muted?: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between text-xs">
+      <span className="text-gray-500">{label}</span>
+      <span className={muted ? "text-gray-700" : "font-medium text-gray-800"}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+/* ============================================================
+   CUSTOMER CARD
+============================================================ */
+function CustomerCard({ customer }: { customer: Customer }) {
+  const balanceLabel =
+    customer.balance_type === "debit" ? "Due (Dr)" : "Advance (Cr)";
+  const balanceColor =
+    customer.balance_type === "debit" && customer.current_balance > 0
+      ? "text-red-600"
+      : "text-[#0fa846]";
+
+  return (
+    <div className="rounded-md border border-[#17D65D]/30 bg-[#17D65D]/5 p-3">
+      <div className="flex items-start gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#17D65D]/20 text-sm font-bold text-[#0fa846]">
+          {customer.name.charAt(0).toUpperCase()}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-baseline gap-x-2">
+            <div className="text-sm font-semibold text-gray-900">
+              {customer.name}
+            </div>
+            <span className="font-mono text-[11px] text-gray-500">
+              {customer.customer_code}
+            </span>
+            <span className="rounded border border-gray-200 bg-white px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-500">
+              {customer.customer_type}
+            </span>
+          </div>
+          {customer.company_name && (
+            <div className="text-xs text-gray-600">
+              {customer.company_name}
+            </div>
+          )}
+          <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px] text-gray-600">
+            {customer.phone && (
+              <div className="truncate">
+                <span className="text-gray-400">📞 </span>
+                {customer.phone}
+              </div>
+            )}
+            {customer.email && (
+              <div className="truncate">
+                <span className="text-gray-400">✉ </span>
+                {customer.email}
+              </div>
+            )}
+            {customer.city && (
+              <div className="truncate">
+                <span className="text-gray-400">📍 </span>
+                {customer.city}
+              </div>
+            )}
+            {customer.tax_number && (
+              <div className="truncate">
+                <span className="text-gray-400">NTN </span>
+                <span className="font-mono">{customer.tax_number}</span>
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="shrink-0 text-right">
+          <div className="text-[10px] uppercase tracking-wide text-gray-400">
+            {balanceLabel}
+          </div>
+          <div className={`text-sm font-semibold ${balanceColor}`}>
+            {formatCurrency(
+              Math.abs(customer.current_balance),
+              customer.currency_code
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   CUSTOMER SEARCH (real-time)
+============================================================ */
+function CustomerSearch({
+  onSelect,
+}: {
+  onSelect: (c: Customer) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<Customer[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [highlight, setHighlight] = useState(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handle = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const params = new URLSearchParams();
+        if (query.trim()) params.set("search", query.trim());
+        params.set("status", "active");
+        params.set("limit", "20");
+        const res = await fetch(`/api/customers?${params.toString()}`, {
+          credentials: "include",
+        });
+        if (!res.ok) throw new Error();
+        const json = await res.json();
+        setResults(json.data || []);
+        setHighlight(0);
+      } catch {
+        setResults([]);
+      } finally {
+        setLoading(false);
+      }
+    }, 220);
+    return () => clearTimeout(handle);
+  }, [query, open]);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!open) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHighlight((h) => Math.min(h + 1, results.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlight((h) => Math.max(h - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const pick = results[highlight];
+      if (pick) {
+        onSelect(pick);
+        setQuery("");
+        setOpen(false);
+      }
+    } else if (e.key === "Escape") {
+      setOpen(false);
+    }
+  };
+
+  const clearSearch = () => {
+    setQuery("");
+    inputRef.current?.focus();
+  };
+
+  return (
+    <div ref={containerRef} className="relative">
+      <div className="relative">
+        <svg
+          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z"
+          />
+        </svg>
+        <input
+          ref={inputRef}
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onFocus={() => setOpen(true)}
+          onKeyDown={onKeyDown}
+          placeholder="Search customer by name, phone, email, or code..."
+          className="w-full rounded-md border border-gray-300 bg-white py-2 pl-9 pr-10 text-sm outline-none transition focus:border-[#17D65D] focus:ring-2 focus:ring-[#17D65D]/20"
+        />
+        {loading && (
+          <div className="pointer-events-none absolute right-10 top-1/2 -translate-y-1/2">
+            <div className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-[#17D65D]" />
+          </div>
+        )}
+        {query && (
+          <button
+            type="button"
+            onClick={clearSearch}
+            className="absolute right-3 top-1/2 -translate-y-1/2 rounded p-0.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600"
+          >
+            <svg
+              className="h-4 w-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M6 18L18 6M6 6l12 12"
+              />
+            </svg>
+          </button>
+        )}
+      </div>
+
+      {open && (
+        <div className="absolute left-0 right-0 top-full z-30 mt-1 max-h-80 overflow-y-auto rounded-md border border-gray-200 bg-white shadow-lg">
+          {loading && results.length === 0 ? (
+            <div className="px-4 py-3 text-xs text-gray-500">
+              Searching customers...
+            </div>
+          ) : results.length === 0 ? (
+            <div className="px-4 py-3 text-xs text-gray-500">
+              {query
+                ? `No customers match "${query}".`
+                : "Start typing to search customers..."}
+            </div>
+          ) : (
+            <ul className="divide-y divide-gray-100">
+              {results.map((c, idx) => (
+                <li key={c.id}>
+                  <button
+                    type="button"
+                    onMouseEnter={() => setHighlight(idx)}
+                    onClick={() => {
+                      onSelect(c);
+                      setQuery("");
+                      setOpen(false);
+                    }}
+                    className={`flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition ${
+                      idx === highlight ? "bg-[#17D65D]/10" : "hover:bg-gray-50"
+                    }`}
+                  >
+                    <div className="flex min-w-0 items-center gap-3">
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gray-100 text-xs font-bold text-gray-600">
+                        {c.name.charAt(0).toUpperCase()}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium text-gray-900">
+                          {c.name}
+                        </div>
+                        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[11px] text-gray-500">
+                          <span className="font-mono">
+                            {c.customer_code}
+                          </span>
+                          {c.phone && (
+                            <>
+                              <span>·</span>
+                              <span>{c.phone}</span>
+                            </>
+                          )}
+                          {c.city && (
+                            <>
+                              <span>·</span>
+                              <span>{c.city}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <div className="text-[10px] uppercase tracking-wide text-gray-400">
+                        {c.balance_type === "debit" ? "Due" : "Advance"}
+                      </div>
+                      <div
+                        className={`text-xs font-semibold ${
+                          c.balance_type === "debit" &&
+                          c.current_balance > 0
+                            ? "text-red-600"
+                            : "text-gray-700"
+                        }`}
+                      >
+                        {formatCurrency(
+                          Math.abs(c.current_balance),
+                          c.currency_code
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   PRODUCT SEARCH (real-time)
+============================================================ */
+function ProductSearch({
+  onAdd,
+  cart,
+}: {
+  onAdd: (p: Product) => void;
+  cart: CartItem[];
+}) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<Product[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [highlight, setHighlight] = useState(0);
+  const [justAdded, setJustAdded] = useState<number | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const cartQtyMap = useMemo(() => {
+    const m = new Map<number, number>();
+    cart.forEach((it) => m.set(it.product_id, it.quantity));
+    return m;
+  }, [cart]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handle = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const params = new URLSearchParams();
+        if (query.trim()) params.set("search", query.trim());
+        params.set("status", "active");
+        params.set("limit", "25");
+        const res = await fetch(`/api/products?${params.toString()}`, {
+          credentials: "include",
+        });
+        if (!res.ok) throw new Error();
+        const json = await res.json();
+        setResults(json.data || []);
+        setHighlight(0);
+      } catch {
+        setResults([]);
+      } finally {
+        setLoading(false);
+      }
+    }, 200);
+    return () => clearTimeout(handle);
+  }, [query, open]);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const handleAdd = (p: Product) => {
+    onAdd(p);
+    setJustAdded(p.id);
+    setTimeout(() => setJustAdded(null), 900);
+    inputRef.current?.focus();
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!open) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHighlight((h) => Math.min(h + 1, results.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlight((h) => Math.max(h - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const pick = results[highlight];
+      if (pick) handleAdd(pick);
+    } else if (e.key === "Escape") {
+      setOpen(false);
+    }
+  };
+
+  const clearSearch = () => {
+    setQuery("");
+    inputRef.current?.focus();
+  };
+
+  return (
+    <div ref={containerRef} className="relative">
+      <div className="relative">
+        <svg
+          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z"
+          />
+        </svg>
+        <input
+          ref={inputRef}
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onFocus={() => setOpen(true)}
+          onKeyDown={onKeyDown}
+          placeholder="Search product by name, SKU, or barcode..."
+          className="w-full rounded-md border border-gray-300 bg-white py-2.5 pl-9 pr-10 text-sm outline-none transition focus:border-[#17D65D] focus:ring-2 focus:ring-[#17D65D]/20"
+        />
+        {loading && (
+          <div className="pointer-events-none absolute right-10 top-1/2 -translate-y-1/2">
+            <div className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-[#17D65D]" />
+          </div>
+        )}
+        {query && (
+          <button
+            type="button"
+            onClick={clearSearch}
+            className="absolute right-3 top-1/2 -translate-y-1/2 rounded p-0.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600"
+          >
+            <svg
+              className="h-4 w-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M6 18L18 6M6 6l12 12"
+              />
+            </svg>
+          </button>
+        )}
+      </div>
+
+      {open && (
+        <div className="absolute left-0 right-0 top-full z-30 mt-1 max-h-96 overflow-y-auto rounded-md border border-gray-200 bg-white shadow-lg">
+          {loading && results.length === 0 ? (
+            <div className="px-4 py-3 text-xs text-gray-500">
+              Searching products...
+            </div>
+          ) : results.length === 0 ? (
+            <div className="px-4 py-3 text-xs text-gray-500">
+              {query
+                ? `No products match "${query}".`
+                : "Start typing to search products..."}
+            </div>
+          ) : (
+            <ul className="divide-y divide-gray-100">
+              {results.map((p, idx) => {
+                const inCart = cartQtyMap.get(p.id) || 0;
+                const stock = Number(p.current_stock) || 0;
+                const outOfStock =
+                  p.product_type === "product" && stock <= 0;
+                const justWasAdded = justAdded === p.id;
+                return (
+                  <li key={p.id}>
+                    <button
+                      type="button"
+                      disabled={outOfStock}
+                      onMouseEnter={() => setHighlight(idx)}
+                      onClick={() => handleAdd(p)}
+                      className={`flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition ${
+                        outOfStock
+                          ? "cursor-not-allowed opacity-50"
+                          : justWasAdded
+                          ? "bg-[#17D65D]/20"
+                          : idx === highlight
+                          ? "bg-[#17D65D]/10"
+                          : "hover:bg-gray-50"
+                      }`}
+                    >
+                      <div className="flex min-w-0 items-center gap-3">
+                        {p.category_color ? (
+                          <span
+                            className="h-8 w-1 shrink-0 rounded-full"
+                            style={{ backgroundColor: p.category_color }}
+                          />
+                        ) : (
+                          <span className="h-8 w-1 shrink-0 rounded-full bg-gray-200" />
+                        )}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-sm font-medium text-gray-900">
+                              {p.name}
+                            </span>
+                            {justWasAdded && (
+                              <span className="shrink-0 rounded bg-[#17D65D] px-1.5 py-0.5 text-[10px] font-semibold text-black">
+                                +1
+                              </span>
+                            )}
+                            {inCart > 0 && !justWasAdded && (
+                              <span className="shrink-0 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
+                                {inCart} in cart
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-gray-500">
+                            <span className="font-mono">{p.sku}</span>
+                            {p.barcode && (
+                              <>
+                                <span>·</span>
+                                <span className="font-mono">{p.barcode}</span>
+                              </>
+                            )}
+                            {p.unit_short_name && (
+                              <>
+                                <span>·</span>
+                                <span>Per {p.unit_short_name}</span>
+                              </>
+                            )}
+                            <span>·</span>
+                            <span className={stockColor(stock)}>
+                              {outOfStock ? "Out of stock" : `Stock: ${stock}`}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 flex-col items-end">
+                        <span className="text-sm font-semibold text-gray-900">
+                          {formatCurrency(Number(p.sale_price))}
+                        </span>
+                        {!outOfStock && (
+                          <span className="mt-0.5 inline-flex items-center gap-1 rounded border border-[#17D65D]/40 bg-[#17D65D]/10 px-1.5 py-0.5 text-[10px] font-semibold text-[#0fa846]">
+                            <svg
+                              className="h-2.5 w-2.5"
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={3}
+                                d="M12 4v16m8-8H4"
+                              />
+                            </svg>
+                            ADD
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   CHECKOUT MODAL
+============================================================ */
+function CheckoutModal({
+  customer,
+  totals,
+  paymentMethod,
+  setPaymentMethod,
+  amountPaid,
+  setAmountPaid,
+  changeDue,
+  balanceDue,
+  reference,
+  setReference,
+  notes,
+  setNotes,
+  saving,
+  error,
+  onClose,
+  onSubmit,
+}: {
+  customer: Customer;
+  totals: {
+    subtotal: number;
+    itemDiscountTotal: number;
+    taxTotal: number;
+    orderDiscountAmt: number;
+    shipping: number;
+    grandTotal: number;
+    totalQty: number;
+    itemCount: number;
+  };
+  paymentMethod: string;
+  setPaymentMethod: (v: string) => void;
+  amountPaid: string;
+  setAmountPaid: (v: string) => void;
+  changeDue: number;
+  balanceDue: number;
+  reference: string;
+  setReference: (v: string) => void;
+  notes: string;
+  setNotes: (v: string) => void;
+  saving: boolean;
+  error: string;
+  onClose: () => void;
+  onSubmit: () => void;
+}) {
+  const quickAmounts = useMemo(() => {
+    const base = Math.ceil(totals.grandTotal / 500) * 500;
+    return [
+      totals.grandTotal,
+      base,
+      base + 500,
+      base + 1000,
+      base + 2000,
+    ].filter((v, i, a) => a.indexOf(v) === i);
+  }, [totals.grandTotal]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-lg bg-white shadow-xl">
+        {/* HEADER */}
+        <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
+          <div>
+            <h2 className="text-base font-semibold text-gray-900">
+              Complete Sale
+            </h2>
+            <p className="mt-0.5 text-xs text-gray-500">
+              {customer.name} · {customer.customer_code}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600"
+          >
+            <svg
+              className="h-5 w-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M6 18L18 6M6 6l12 12"
+              />
+            </svg>
+          </button>
+        </div>
+
+        {/* BODY */}
+        <div className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
+          {error && (
+            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {error}
+            </div>
+          )}
+
+          {/* TOTAL */}
+          <div className="rounded-lg border border-[#17D65D]/30 bg-[#17D65D]/5 p-4 text-center">
+            <div className="text-xs font-medium uppercase tracking-wide text-[#0fa846]">
+              Amount due
+            </div>
+            <div className="mt-1 text-3xl font-bold text-gray-900">
+              {formatCurrency(totals.grandTotal)}
+            </div>
+            <div className="mt-1 text-[11px] text-gray-500">
+              {totals.itemCount} item{totals.itemCount !== 1 ? "s" : ""} ·{" "}
+              {totals.totalQty} qty
+            </div>
+          </div>
+
+          {/* PAYMENT METHOD */}
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-gray-700">
+              Payment method
+            </label>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {[
+                { id: "cash", label: "Cash", icon: "💵" },
+                { id: "card", label: "Card", icon: "💳" },
+                { id: "bank", label: "Bank", icon: "🏦" },
+                { id: "credit", label: "On Credit", icon: "🧾" },
+              ].map((pm) => (
+                <button
+                  key={pm.id}
+                  type="button"
+                  onClick={() => {
+                    setPaymentMethod(pm.id);
+                    if (pm.id === "credit") setAmountPaid("0");
+                  }}
+                  className={`flex flex-col items-center gap-1 rounded-md border px-2 py-2.5 text-xs font-medium transition ${
+                    paymentMethod === pm.id
+                      ? "border-[#17D65D] bg-[#17D65D]/10 text-[#0fa846]"
+                      : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50"
+                  }`}
+                >
+                  <span className="text-base">{pm.icon}</span>
+                  {pm.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* AMOUNT PAID */}
+          {paymentMethod !== "credit" && (
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                Amount paid
+              </label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={amountPaid}
+                onChange={(e) => setAmountPaid(e.target.value)}
+                className={`${inputCls} text-lg font-semibold`}
+              />
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {quickAmounts.map((amt) => (
+                  <button
+                    key={amt}
+                    type="button"
+                    onClick={() => setAmountPaid(String(amt))}
+                    className="rounded border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs font-medium text-gray-700 transition hover:bg-gray-100"
+                  >
+                    {formatCurrency(amt)}
+                  </button>
+                ))}
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
+                  <div className="text-gray-500">Change due</div>
+                  <div className="mt-0.5 text-sm font-semibold text-[#0fa846]">
+                    {formatCurrency(changeDue)}
+                  </div>
+                </div>
+                <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
+                  <div className="text-gray-500">Balance due</div>
+                  <div
+                    className={`mt-0.5 text-sm font-semibold ${
+                      balanceDue > 0 ? "text-red-600" : "text-gray-700"
+                    }`}
+                  >
+                    {formatCurrency(balanceDue)}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* REFERENCE */}
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-gray-700">
+              Reference / PO number
+            </label>
+            <input
+              type="text"
+              value={reference}
+              onChange={(e) => setReference(e.target.value)}
+              placeholder="Optional"
+              className={inputCls}
+            />
+          </div>
+
+          {/* NOTES */}
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-gray-700">
+              Notes
+            </label>
+            <textarea
+              rows={2}
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Optional internal notes"
+              className={inputCls}
+            />
+          </div>
+
+          {/* SUMMARY */}
+          <div className="space-y-1 rounded-md border border-gray-200 bg-gray-50 p-3 text-xs">
+            <Row label="Subtotal" value={formatCurrency(totals.subtotal)} />
+            {totals.itemDiscountTotal > 0 && (
+              <Row
+                label="Item discount"
+                value={`− ${formatCurrency(totals.itemDiscountTotal)}`}
+                muted
+              />
+            )}
+            <Row label="Tax" value={formatCurrency(totals.taxTotal)} muted />
+            {totals.orderDiscountAmt > 0 && (
+              <Row
+                label="Order discount"
+                value={`− ${formatCurrency(totals.orderDiscountAmt)}`}
+                muted
+              />
+            )}
+            {totals.shipping > 0 && (
+              <Row
+                label="Shipping"
+                value={formatCurrency(totals.shipping)}
+                muted
+              />
+            )}
+            <div className="my-1 border-t border-gray-200" />
+            <Row
+              label="Grand total"
+              value={formatCurrency(totals.grandTotal)}
+            />
+          </div>
+        </div>
+
+        {/* FOOTER */}
+        <div className="flex items-center justify-end gap-2 border-t border-gray-200 bg-gray-50 px-6 py-3.5">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50"
+          >
+            Back
+          </button>
+          <button
+            type="button"
+            onClick={onSubmit}
+            disabled={saving}
+            className={btnPrimary}
+          >
+            {saving ? (
+              <>
+                <div className="h-4 w-4 animate-spin rounded-full border-2 border-black/20 border-t-black" />
+                Processing...
+              </>
+            ) : (
+              <>
+                <svg
+                  className="h-4 w-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                Complete Sale
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   SUCCESS MODAL
+============================================================ */
+function SuccessModal({
+  result,
+  onClose,
+}: {
+  result: InvoiceResult;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-md overflow-hidden rounded-lg bg-white shadow-xl">
+        <div className="bg-[#17D65D]/10 px-6 py-6 text-center">
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-[#17D65D] text-white shadow-lg">
+            <svg
+              className="h-8 w-8"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={3}
+                d="M5 13l4 4L19 7"
+              />
+            </svg>
+          </div>
+          <h2 className="mt-3 text-lg font-semibold text-gray-900">
+            Sale Complete
+          </h2>
+          <p className="mt-0.5 text-xs text-gray-600">
+            Invoice created successfully
+          </p>
+        </div>
+
+        <div className="space-y-3 px-6 py-5">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-gray-500">Invoice #</span>
+            <span className="font-mono font-semibold text-gray-900">
+              {result.invoice_number}
+            </span>
+          </div>
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-gray-500">Customer</span>
+            <span className="font-medium text-gray-900">
+              {result.customer_name}
+            </span>
+          </div>
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-gray-500">Total</span>
+            <span className="font-semibold text-gray-900">
+              {formatCurrency(result.grand_total)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-gray-500">Paid</span>
+            <span className="font-medium text-gray-900">
+              {formatCurrency(result.paid_amount)}
+            </span>
+          </div>
+          {result.change_due > 0 && (
+            <div className="flex items-center justify-between rounded-md border border-[#17D65D]/30 bg-[#17D65D]/5 px-3 py-2">
+              <span className="text-sm font-medium text-[#0fa846]">
+                Change due
+              </span>
+              <span className="text-lg font-bold text-[#0fa846]">
+                {formatCurrency(result.change_due)}
+              </span>
+            </div>
+          )}
+        </div>
+
+        <div className="border-t border-gray-200 bg-gray-50 px-6 py-3.5">
+          <button
+            type="button"
+            onClick={onClose}
+            className={`${btnPrimary} w-full`}
+          >
+            New Sale
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
