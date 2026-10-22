@@ -55,6 +55,12 @@ export async function PUT(req: NextRequest, { params }: Ctx) {
     if (error) {
       return NextResponse.json({ error }, { status: 400 });
     }
+    if (existing.handover_id && values.status !== undefined && values.status !== "won") {
+      return NextResponse.json(
+        { error: `This lead is already converted to order ${existing.order_number} — status stays Won` },
+        { status: 400 }
+      );
+    }
     const sets = Object.keys(values).map((c) => `${c} = ?`);
     const vals = Object.values(values);
 
@@ -83,6 +89,13 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
     if (!user) return unauthorized();
     await ensureLeadsTable();
     const id = Number((await params).id);
+    const lead = id ? await loadLead(id, user.company_id) : null;
+    if (lead?.handover_id) {
+      return NextResponse.json(
+        { error: `This lead has order ${lead.order_number} — it can't be deleted` },
+        { status: 409 }
+      );
+    }
     const [result] = await getPool().query(
       `DELETE FROM ${LEADS_TABLE} WHERE id = ? AND company_id = ?`,
       [id, user.company_id]
