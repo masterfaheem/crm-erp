@@ -1,4 +1,5 @@
 import { getPool } from "@/lib/db";
+import { addCustomerPayment, recalcCustomer, recalcInvoice, nextDocNumber } from "@/lib/ledger";
 
 /* ============================================================
    LEAD -> CUSTOMER -> SALES ORDER -> POS INVOICE
@@ -42,6 +43,7 @@ export async function ensureHandoverTable(): Promise<void> {
       review_rating TINYINT NULL,
       review_comment VARCHAR(1000) NULL,
       review_at DATETIME NULL,
+      payment_id INT UNSIGNED NULL,
       created_by INT UNSIGNED NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -60,12 +62,51 @@ export async function ensureHandoverTable(): Promise<void> {
     ["review_rating", "TINYINT NULL"],
     ["review_comment", "VARCHAR(1000) NULL"],
     ["review_at", "DATETIME NULL"],
+    ["payment_id", "INT UNSIGNED NULL"],
   ];
   const missing = extra.filter(([c]) => !have.has(c));
   if (missing.length) {
     await getPool().query(
       `ALTER TABLE ${HANDOVER_TABLE} ${missing.map(([c, d]) => `ADD COLUMN ${c} ${d}`).join(", ")}`
     );
+  }
+  // one-time: payments taken before billing used to live only on the handover —
+  // record them as real customer payments so khata / reports include them
+  try {
+    const [old] = await getPool().query(
+      `SELECT h.*, so.order_number FROM ${HANDOVER_TABLE} h JOIN sales_orders so ON so.id = h.sales_order_id
+        WHERE h.payment_id IS NULL AND h.advance_amount > 0`
+    );
+    for (const h of old as Record<string, unknown>[]) {
+      const conn = await getPool().getConnection();
+      try {
+        await conn.beginTransaction();
+        const pid = await addCustomerPayment(
+          conn,
+          { id: Number(h.created_by) || 0, company_id: Number(h.company_id), branch_id: null },
+          {
+            customer_id: Number(h.customer_id),
+            invoice_id: h.invoice_id ? Number(h.invoice_id) : null,
+            amount: Number(h.advance_amount),
+            method: String(h.advance_method || "bank_transfer"),
+            reference: (h.advance_reference as string) || null,
+            payment_date: new Date(new Date(String(h.created_at)).getTime() + 5 * 3600000).toISOString().slice(0, 10),
+            notes: `Payment for ${h.order_number}`,
+          }
+        );
+        await conn.query(`UPDATE ${HANDOVER_TABLE} SET payment_id = ? WHERE id = ?`, [pid, h.id]);
+        if (h.invoice_id) await recalcInvoice(conn, Number(h.invoice_id), Number(h.company_id));
+        else await recalcCustomer(conn, Number(h.company_id), Number(h.customer_id));
+        await conn.commit();
+      } catch (e) {
+        await conn.rollback();
+        console.error("handover payment backfill failed", e);
+      } finally {
+        conn.release();
+      }
+    }
+  } catch {
+    /* customer_payments not available */
   }
   ensured = true;
 }
@@ -84,11 +125,12 @@ export const SO_STATUS_FOR: Record<string, string> = {
 
 export const PAYMENT_METHODS = [
   { value: "bank_transfer", label: "Bank Transfer" },
+  { value: "cash", label: "Cash" },
+  { value: "wallet", label: "JazzCash / Easypaisa" },
+  { value: "card", label: "Card (POS machine)" },
   { value: "jazzcash", label: "JazzCash" },
   { value: "easypaisa", label: "Easypaisa" },
-  { value: "cash", label: "Cash" },
-  { value: "card", label: "Card" },
-  { value: "none", label: "No advance" },
+  { value: "none", label: "Not paid yet" },
 ];
 
 /* ---------------- phone matching ---------------- */
@@ -272,22 +314,7 @@ export async function nextSalesOrderNumber(
   conn: any,
   companyId: number
 ): Promise<string> {
-  const year = new Date().getFullYear();
-  const [rows] = await conn.query(
-    "SELECT COUNT(*) AS c FROM sales_orders WHERE company_id = ? AND YEAR(created_at) = ?",
-    [companyId, year]
-  );
-  let seq = Number((rows as { c: number }[])[0]?.c || 0) + 1;
-  for (let i = 0; i < 50; i++) {
-    const num = `SO-${year}-${String(seq).padStart(4, "0")}`;
-    const [dup] = await conn.query(
-      "SELECT id FROM sales_orders WHERE company_id = ? AND order_number = ? LIMIT 1",
-      [companyId, num]
-    );
-    if (!(dup as unknown[]).length) return num;
-    seq++;
-  }
-  return `SO-${year}-${Date.now()}`;
+  return nextDocNumber("sales_orders", "order_number", "SO", companyId, conn);
 }
 
 /* Full handover row for dispatch / POS views */
@@ -300,7 +327,9 @@ export const HANDOVER_SELECT = `
          c.customer_code, c.name AS customer_name, c.phone AS customer_phone, c.whatsapp AS customer_whatsapp,
          l.lead_number, l.first_name AS lead_first_name, l.last_name AS lead_last_name,
          l.requirement_note, l.source AS lead_source,
-         i.invoice_number,
+         i.invoice_number, i.grand_total AS bill_total,
+         COALESCE(i.paid_amount, h.advance_amount) AS paid_total,
+         CASE WHEN i.id IS NULL THEN h.cod_amount ELSE i.balance END AS balance_due,
          u.name AS created_by_name
     FROM ${HANDOVER_TABLE} h
     JOIN sales_orders so ON so.id = h.sales_order_id
