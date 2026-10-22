@@ -1,39 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
-
-async function recalcInvoice(conn: any, invoiceId: number, companyId: number) {
-  const [sum] = await conn.query(
-    `SELECT COALESCE(SUM(amount), 0) AS paid
-       FROM customer_payments
-      WHERE company_id = ? AND invoice_id = ? AND status = 'cleared'`,
-    [companyId, invoiceId]
-  ) as any[];
-  let paid = Number(sum?.paid ?? 0);
-  /* advance taken at "Convert to Order" (online orders) also counts as paid */
-  try {
-    const [adv] = await conn.query(
-      `SELECT COALESCE(SUM(advance_amount), 0) AS adv FROM crm_order_handovers WHERE company_id = ? AND invoice_id = ?`,
-      [companyId, invoiceId]
-    ) as any[];
-    paid += Number(adv?.adv ?? 0);
-  } catch {
-    /* handover table not created yet */
-  }
-  const [inv] = await conn.query(
-    "SELECT grand_total FROM invoices WHERE id = ? AND company_id = ?",
-    [invoiceId, companyId]
-  ) as any[];
-  const total = Number(inv?.grand_total ?? 0);
-  const balance = Math.max(0, total - paid);
-  let status = "unpaid";
-  if (paid >= total && total > 0) status = "paid";
-  else if (paid > 0) status = "partially_paid";
-  await conn.query(
-    "UPDATE invoices SET paid_amount = ?, balance = ?, status = ? WHERE id = ? AND company_id = ?",
-    [paid, balance, status, invoiceId, companyId]
-  );
-}
+import { recalcCustomer, recalcInvoice } from "@/lib/ledger";
 
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await requireUser(req);
@@ -59,10 +27,13 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     const invoice_id = body.invoice_id ? Number(body.invoice_id) : null;
 
     const [existing] = await query<any[]>(
-      "SELECT id, invoice_id FROM customer_payments WHERE id = ? AND company_id = ? LIMIT 1",
+      "SELECT id, invoice_id, customer_id FROM customer_payments WHERE id = ? AND company_id = ? LIMIT 1",
       [id, companyId]
     );
-    if (!existing) return NextResponse.json({ error: "Payment not found." }, { status: 404 });
+    if (!existing) {
+      conn.release();
+      return NextResponse.json({ error: "Payment not found." }, { status: 404 });
+    }
 
     await conn.beginTransaction();
     await conn.query(
@@ -78,6 +49,9 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     // Recalc both old and new invoice
     if (existing.invoice_id) await recalcInvoice(conn, existing.invoice_id, companyId);
     if (invoice_id && invoice_id !== existing.invoice_id) await recalcInvoice(conn, invoice_id, companyId);
+    // customer khata (old + new customer)
+    await recalcCustomer(conn, companyId, Number(existing.customer_id));
+    if (customer_id && customer_id !== Number(existing.customer_id)) await recalcCustomer(conn, companyId, customer_id);
 
     await conn.commit(); conn.release();
 
@@ -109,14 +83,23 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   const pool = getPool(); const conn = await pool.getConnection();
   try {
     const [existing] = await query<any[]>(
-      "SELECT id, invoice_id FROM customer_payments WHERE id = ? AND company_id = ? LIMIT 1",
+      "SELECT id, invoice_id, customer_id FROM customer_payments WHERE id = ? AND company_id = ? LIMIT 1",
       [id, companyId]
     );
-    if (!existing) return NextResponse.json({ error: "Payment not found." }, { status: 404 });
+    if (!existing) {
+      conn.release();
+      return NextResponse.json({ error: "Payment not found." }, { status: 404 });
+    }
 
     await conn.beginTransaction();
     await conn.query("DELETE FROM customer_payments WHERE id = ? AND company_id = ?", [id, companyId]);
+    try {
+      await conn.query("UPDATE crm_order_handovers SET payment_id = NULL WHERE company_id = ? AND payment_id = ?", [companyId, id]);
+    } catch {
+      /* handover table not created yet */
+    }
     if (existing.invoice_id) await recalcInvoice(conn, existing.invoice_id, companyId);
+    await recalcCustomer(conn, companyId, Number(existing.customer_id));
     await conn.commit(); conn.release();
 
     return NextResponse.json({ success: true });
