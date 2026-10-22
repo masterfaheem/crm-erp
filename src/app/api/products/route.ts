@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
+import { ensureStockTable, STOCK_SQL } from "@/lib/ledger";
 
 /* ============================================================
    GET  /api/products
@@ -11,6 +12,7 @@ export async function GET(req: NextRequest) {
   if (!user) return unauthorized();
 
   const companyId = user.company_id;
+  await ensureStockTable();
 
   try {
     const { searchParams } = new URL(req.url);
@@ -69,7 +71,7 @@ export async function GET(req: NextRequest) {
          p.min_stock,
          p.max_stock,
          p.reorder_level,
-         p.opening_stock,
+         p.opening_stock, ${STOCK_SQL} AS current_stock,
          p.track_inventory,
          p.image_path,
          p.status,
@@ -125,6 +127,7 @@ export async function POST(req: NextRequest) {
   if (!user) return unauthorized();
 
   const companyId = user.company_id;
+  await ensureStockTable();
 
   try {
     const body = await req.json().catch(() => ({}));
@@ -251,7 +254,7 @@ export async function POST(req: NextRequest) {
          p.id, p.sku, p.barcode, p.name, p.description, p.product_type,
          p.purchase_price, p.sale_price, p.wholesale_price,
          p.tax_rate, p.discount_percent,
-         p.min_stock, p.max_stock, p.reorder_level, p.opening_stock,
+         p.min_stock, p.max_stock, p.reorder_level, p.opening_stock, ${STOCK_SQL} AS current_stock,
          p.track_inventory, p.image_path, p.status, p.notes, p.created_at,
          p.category_id, c.name AS category_name, c.color AS category_color,
          p.unit_id, u.name AS unit_name, u.short_name AS unit_short_name
