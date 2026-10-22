@@ -74,10 +74,11 @@ interface LeadDetail {
 }
 
 const ORDER_STATUS: Record<string, { label: string; cls: string }> = {
-  pending: { label: "Pending dispatch", cls: "bg-amber-100 text-amber-800" },
-  invoiced: { label: "Billed — ready to ship", cls: "bg-blue-100 text-blue-800" },
-  shipped: { label: "Shipped", cls: "bg-indigo-100 text-indigo-800" },
-  delivered: { label: "Delivered", cls: "bg-green-100 text-green-800" },
+  pending: { label: "1 · To bill (POS)", cls: "bg-amber-100 text-amber-800" },
+  invoiced: { label: "2 · Billed — ready to dispatch", cls: "bg-blue-100 text-blue-800" },
+  shipped: { label: "3 · Dispatched", cls: "bg-indigo-100 text-indigo-800" },
+  delivered: { label: "4 · Delivered — review pending", cls: "bg-pink-100 text-pink-800" },
+  completed: { label: "✓ Completed", cls: "bg-green-100 text-green-800" },
   cancelled: { label: "Cancelled", cls: "bg-gray-100 text-gray-600" },
 };
 
