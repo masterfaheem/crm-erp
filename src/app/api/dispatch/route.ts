@@ -11,8 +11,8 @@ import {
 
 /* ============================================================
    GET /api/dispatch
-     ?status=pending|invoiced|shipped|delivered|cancelled|open|all
-       (open = pending + invoiced + shipped)
+     ?status=pending|invoiced|shipped|delivered|completed|cancelled|open|all
+       (open = pending + invoiced + shipped + delivered[awaiting review])
      ?customer_id=   ?sales_order_id=   ?search=
    Returns orders with items + counts per status.
 ============================================================ */
@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
     const where: string[] = ["h.company_id = ?"];
     const params: unknown[] = [user.company_id];
 
-    if (status === "open") where.push("h.status IN ('pending','invoiced','shipped')");
+    if (status === "open") where.push("h.status IN ('pending','invoiced','shipped','delivered')");
     else if (status !== "all") {
       where.push("h.status = ?");
       params.push(status);
