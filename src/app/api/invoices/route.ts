@@ -120,6 +120,42 @@ export async function POST(req: NextRequest) {
     });
 
     await conn.beginTransaction();
+
+    /* ---- Online order (lead handover): bill only once, advance counts as paid ---- */
+    let handover: { id: number; advance_amount: number } | null = null;
+    if (sales_order_id) {
+      const [soRows] = await conn.query<any>(
+        `SELECT id FROM sales_orders WHERE id = ? AND company_id = ? FOR UPDATE`,
+        [sales_order_id, companyId]
+      );
+      if (!(soRows as any[]).length) {
+        await conn.rollback(); conn.release();
+        return NextResponse.json({ error: "Sales order not found." }, { status: 404 });
+      }
+      const [dupInv] = await conn.query<any>(
+        `SELECT invoice_number FROM invoices
+          WHERE sales_order_id = ? AND company_id = ? AND status <> 'cancelled' LIMIT 1`,
+        [sales_order_id, companyId]
+      );
+      if ((dupInv as any[]).length) {
+        await conn.rollback(); conn.release();
+        return NextResponse.json(
+          { error: `This order is already billed (${(dupInv as any[])[0].invoice_number}).` },
+          { status: 409 }
+        );
+      }
+      try {
+        const [hRows] = await conn.query<any>(
+          `SELECT id, advance_amount FROM crm_order_handovers WHERE sales_order_id = ? AND company_id = ? LIMIT 1`,
+          [sales_order_id, companyId]
+        );
+        const h = (hRows as any[])[0];
+        if (h) handover = { id: h.id, advance_amount: Number(h.advance_amount) || 0 };
+      } catch {
+        /* handover table not created yet */
+      }
+    }
+
     const invoice_number = await nextInvoiceNumber(companyId);
 
     const [ins] = await conn.query<any>(
@@ -137,6 +173,27 @@ export async function POST(req: NextRequest) {
       ]
     );
     const invoiceId = ins.insertId;
+
+    if (sales_order_id) {
+      await conn.query(
+        `UPDATE sales_orders SET status = 'processing'
+          WHERE id = ? AND company_id = ? AND status IN ('draft', 'confirmed')`,
+        [sales_order_id, companyId]
+      );
+    }
+    if (handover) {
+      const paid = Math.min(handover.advance_amount, grand_total);
+      const balance = Math.max(0, grand_total - paid);
+      const invStatus = balance <= 0 ? "paid" : paid > 0 ? "partially_paid" : status;
+      await conn.query(
+        `UPDATE invoices SET paid_amount = ?, balance = ?, status = ? WHERE id = ?`,
+        [paid, balance, invStatus, invoiceId]
+      );
+      await conn.query(
+        `UPDATE crm_order_handovers SET invoice_id = ?, status = 'invoiced' WHERE id = ?`,
+        [invoiceId, handover.id]
+      );
+    }
 
     for (const p of prepared) {
       await conn.query(

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { verifySession, SESSION_COOKIE_NAME } from "@/lib/auth";
+import { findCustomerByPhones } from "@/lib/orderHandover";
 
 /* ============================================================
    AUTH HELPER
@@ -238,6 +239,24 @@ export async function POST(req: NextRequest) {
         { error: "Customer name is required" },
         { status: 400 }
       );
+    }
+
+    /* ---- Duplicate phone check (same person = same number) ---- */
+    {
+      const dupPhone = await findCustomerByPhones(conn, authUser.company_id, [
+        body.phone,
+        body.whatsapp,
+        body.alternate_phone,
+      ]);
+      if (dupPhone) {
+        return NextResponse.json(
+          {
+            error: `A customer with this phone already exists: ${dupPhone.customer_code} — ${dupPhone.name}`,
+            existing_id: dupPhone.id,
+          },
+          { status: 409 }
+        );
+      }
     }
 
     /* ---- Duplicate tax number check ---- */

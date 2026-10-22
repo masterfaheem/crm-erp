@@ -122,7 +122,7 @@ export default function EditLeadPage() {
                   {error && (
                     <div className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
                   )}
-                  <LeadFormFields key={leadNumber} form={form} setForm={setForm} users={users} />
+                  <LeadFormFields key={leadNumber} form={form} setForm={setForm} users={users} excludeId={Number(id)} />
                   {error && (
                     <div className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
                   )}

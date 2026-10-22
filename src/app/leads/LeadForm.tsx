@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import Link from "next/link";
 import {
   BUDGET_RANGES,
   LEAD_SOURCES,
@@ -146,14 +147,66 @@ function Section({ title, right }: { title: string; right?: React.ReactNode }) {
   );
 }
 
+/* Warn when the number already exists as a lead or customer */
+function PhoneDupWarning({ phone, excludeId }: { phone: string; excludeId?: number }) {
+  const [hit, setHit] = useState<{
+    leads: { id: number; lead_number: string; first_name: string; last_name: string | null; status: string }[];
+    customers: { id: number; customer_code: string; name: string }[];
+  } | null>(null);
+  const digits = phone.replace(/\D/g, "");
+
+  useEffect(() => {
+    if (digits.length < 10) return;
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const qs = new URLSearchParams({ phone: digits });
+        if (excludeId) qs.set("exclude", String(excludeId));
+        const r = await fetch(`/api/leads/check-phone?${qs}`, { credentials: "include" });
+        const j = r.ok ? await r.json() : null;
+        if (!cancelled) setHit(j?.data || null);
+      } catch {
+        /* ignore */
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [digits, excludeId]);
+
+  if (digits.length < 10 || !hit || (!hit.leads.length && !hit.customers.length)) return null;
+  return (
+    <div className="mt-1.5 rounded-lg bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-900">
+      ⚠️ This number already exists:
+      {hit.customers.map((c) => (
+        <span key={`c${c.id}`} className="ml-1">
+          <Link href={`/customers/${c.id}`} target="_blank" className="font-semibold underline">
+            Customer {c.customer_code} ({c.name})
+          </Link>
+        </span>
+      ))}
+      {hit.leads.map((l) => (
+        <span key={`l${l.id}`} className="ml-1">
+          <Link href={`/leads/${l.id}`} target="_blank" className="font-semibold underline">
+            {l.lead_number} ({[l.first_name, l.last_name].filter(Boolean).join(" ")}, {l.status})
+          </Link>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export function LeadFormFields({
   form,
   setForm,
   users,
+  excludeId,
 }: {
   form: LeadFormState;
   setForm: React.Dispatch<React.SetStateAction<LeadFormState>>;
   users: { id: number; name: string }[];
+  excludeId?: number;
 }) {
   const [showFollowUp, setShowFollowUp] = useState(!!form.follow_up_at);
   const set = <K extends keyof LeadFormState>(k: K, v: LeadFormState[K]) =>
@@ -185,6 +238,7 @@ export function LeadFormFields({
       </Field>
       <Field label="WhatsApp">
         <input value={form.whatsapp} onChange={(e) => set("whatsapp", e.target.value)} className={inputCls} placeholder="03XX XXXXXXX" inputMode="tel" />
+        <PhoneDupWarning phone={form.whatsapp} excludeId={excludeId} />
       </Field>
       <Field label="City">
         <CitySelect value={form.city} onChange={(v) => set("city", v)} />

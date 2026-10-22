@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import Navbar from "@/app/components/Navbar";
+import ConvertOrderModal from "../ConvertOrderModal";
 import {
   BUDGET_LABELS,
   LOST_REASONS,
@@ -65,7 +66,21 @@ interface LeadDetail {
   description: string | null;
   created_at: string;
   updated_at: string;
+  handover_id: number | null;
+  order_status: string | null;
+  order_number: string | null;
+  order_customer_id: number | null;
+  order_customer_code: string | null;
 }
+
+const ORDER_STATUS: Record<string, { label: string; cls: string }> = {
+  pending: { label: "1 · To bill (POS)", cls: "bg-amber-100 text-amber-800" },
+  invoiced: { label: "2 · Billed — ready to dispatch", cls: "bg-blue-100 text-blue-800" },
+  shipped: { label: "3 · Dispatched", cls: "bg-indigo-100 text-indigo-800" },
+  delivered: { label: "4 · Delivered — review pending", cls: "bg-pink-100 text-pink-800" },
+  completed: { label: "✓ Completed", cls: "bg-green-100 text-green-800" },
+  cancelled: { label: "Cancelled", cls: "bg-gray-100 text-gray-600" },
+};
 
 function fmtDate(v: string | null, withTime = false): string {
   if (!v) return "-";
@@ -111,6 +126,12 @@ export default function LeadViewPage() {
   const [lostReason, setLostReason] = useState("");
   const [lostOther, setLostOther] = useState("");
   const [showReschedule, setShowReschedule] = useState(false);
+  const [showConvert, setShowConvert] = useState(false);
+  const [converted, setConverted] = useState<{
+    order_number: string;
+    customer_code: string;
+    customer_created: boolean;
+  } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -168,7 +189,9 @@ export default function LeadViewPage() {
       setLostOther(lead.lost_reason_other || "");
     } else {
       setPendingStatus(null);
-      save({ status: value });
+      save({ status: value }).then((ok) => {
+        if (ok && value === "won" && !lead.handover_id) setShowConvert(true);
+      });
     }
   };
 
@@ -261,16 +284,33 @@ export default function LeadViewPage() {
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    <Link href={`/leads/${lead.id}/edit`} className="rounded-lg bg-[#17D65D] px-4 py-2 text-sm font-semibold text-black hover:bg-[#15c455]">
+                    {!lead.handover_id && lead.status !== "lost" && (
+                      <button
+                        onClick={() => setShowConvert(true)}
+                        className={`rounded-lg px-4 py-2 text-sm font-bold ${
+                          lead.status === "won"
+                            ? "bg-[#17D65D] text-black hover:bg-[#15c455]"
+                            : "border border-[#17D65D] bg-white text-[#0f9d48] hover:bg-[#17D65D]/10"
+                        }`}
+                      >
+                        ✅ Convert to Order
+                      </button>
+                    )}
+                    <Link
+                      href={`/leads/${lead.id}/edit`}
+                      className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50"
+                    >
                       Edit Lead
                     </Link>
-                    <button
-                      onClick={handleDelete}
-                      disabled={deleting}
-                      className="rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50"
-                    >
-                      {deleting ? "Deleting..." : "Delete"}
-                    </button>
+                    {!lead.handover_id && (
+                      <button
+                        onClick={handleDelete}
+                        disabled={deleting}
+                        className="rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50"
+                      >
+                        {deleting ? "Deleting..." : "Delete"}
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -341,6 +381,33 @@ export default function LeadViewPage() {
 
                   {/* RIGHT */}
                   <div className="space-y-5">
+                    {lead.handover_id && (
+                      <div className="rounded-2xl border-2 border-[#17D65D] bg-[#17D65D]/5 p-5 shadow-sm">
+                        <h2 className="text-sm font-bold text-gray-900">📦 Order sent to Operations</h2>
+                        {converted && (
+                          <p className="mt-2 rounded-lg bg-green-100 px-3 py-2 text-xs text-green-900">
+                            Done! {converted.customer_created ? "New customer" : "Existing customer"}{" "}
+                            <b>{converted.customer_code}</b> · order <b>{converted.order_number}</b>
+                          </p>
+                        )}
+                        <p className="mt-2 text-lg font-bold text-gray-900">{lead.order_number}</p>
+                        {lead.order_status && (
+                          <span className={`mt-1 inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${ORDER_STATUS[lead.order_status]?.cls || ""}`}>
+                            {ORDER_STATUS[lead.order_status]?.label || lead.order_status}
+                          </span>
+                        )}
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <Link href={`/dispatch?search=${encodeURIComponent(lead.order_number || "")}&status=all`} className="rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-gray-700">
+                            View order
+                          </Link>
+                          {lead.order_customer_id && (
+                            <Link href={`/customers/${lead.order_customer_id}`} className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50">
+                              Customer {lead.order_customer_code}
+                            </Link>
+                          )}
+                        </div>
+                      </div>
+                    )}
                     {/* Status */}
                     <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
                       <h2 className="mb-3 text-sm font-semibold text-gray-900">Quick Update</h2>
@@ -361,7 +428,8 @@ export default function LeadViewPage() {
                       <label className="mb-1 block text-xs font-semibold text-gray-700">Status</label>
                       <select
                         value={pendingStatus || lead.status}
-                        disabled={saving}
+                        disabled={saving || !!lead.handover_id}
+                        title={lead.handover_id ? "Converted to order — status stays Won" : undefined}
                         onChange={(e) => onStatusChange(e.target.value)}
                         className={`${inputCls} mb-3`}
                       >
@@ -506,6 +574,18 @@ export default function LeadViewPage() {
           </div>
         </div>
       </main>
+
+      {showConvert && lead && (
+        <ConvertOrderModal
+          lead={lead}
+          onClose={() => setShowConvert(false)}
+          onDone={(r) => {
+            setShowConvert(false);
+            setConverted(r);
+            load();
+          }}
+        />
+      )}
     </>
   );
 }
