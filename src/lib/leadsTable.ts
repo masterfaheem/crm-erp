@@ -90,3 +90,149 @@ export const LEAD_SELECT = `
     FROM ${LEADS_TABLE} l
     LEFT JOIN users u ON u.id = l.assigned_to
 `;
+
+/* ============================================================
+   FILTERS (shared by list + export)
+   Query params:
+     search, lead_number, name, phone, email, company, designation,
+     city, source, status, priority, assigned_to (id | "unassigned"),
+     value_min, value_max, close_from, close_to, created_from, created_to,
+     address, notes
+============================================================ */
+export function buildLeadFilters(
+  sp: URLSearchParams,
+  companyId: number
+): { whereSql: string; params: unknown[] } {
+  const where: string[] = ["l.company_id = ?"];
+  const params: unknown[] = [companyId];
+  const get = (k: string) => sp.get(k)?.trim() || "";
+  const like = (v: string) => `%${v}%`;
+
+  const search = get("search");
+  if (search) {
+    where.push(
+      `(l.first_name LIKE ? OR l.last_name LIKE ? OR CONCAT_WS(' ', l.first_name, l.last_name) LIKE ?
+        OR l.company_name LIKE ? OR l.email LIKE ? OR l.phone LIKE ? OR l.whatsapp LIKE ?
+        OR l.alternate_phone LIKE ? OR l.lead_number LIKE ? OR l.city LIKE ?)`
+    );
+    for (let i = 0; i < 10; i++) params.push(like(search));
+  }
+
+  const name = get("name");
+  if (name) {
+    where.push(
+      `(CONCAT_WS(' ', l.first_name, l.last_name) LIKE ? OR l.first_name LIKE ? OR l.last_name LIKE ?)`
+    );
+    params.push(like(name), like(name), like(name));
+  }
+
+  const phone = get("phone");
+  if (phone) {
+    // match on digits only so 0300-1234567 / +92 300 1234567 both work
+    const digits = phone.replace(/\D/g, "");
+    const key = digits.length > 10 ? digits.slice(-10) : digits;
+    if (key) {
+      const norm = (col: string) =>
+        `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(IFNULL(${col},''),' ',''),'-',''),'+',''),'(',''),')','')`;
+      where.push(
+        `(${norm("l.phone")} LIKE ? OR ${norm("l.whatsapp")} LIKE ? OR ${norm("l.alternate_phone")} LIKE ?)`
+      );
+      params.push(like(key), like(key), like(key));
+    }
+  }
+
+  const textCols: [string, string][] = [
+    ["lead_number", "l.lead_number"],
+    ["email", "l.email"],
+    ["company", "l.company_name"],
+    ["designation", "l.designation"],
+    ["address", "l.address"],
+    ["notes", "l.description"],
+  ];
+  for (const [k, col] of textCols) {
+    const v = get(k);
+    if (v) {
+      where.push(`${col} LIKE ?`);
+      params.push(like(v));
+    }
+  }
+
+  const city = get("city");
+  if (city) {
+    where.push("l.city = ?");
+    params.push(city);
+  }
+  const source = get("source");
+  if (source) {
+    where.push("l.source = ?");
+    params.push(source);
+  }
+  const status = get("status");
+  if (status && LEAD_STATUSES.includes(status)) {
+    where.push("l.status = ?");
+    params.push(status);
+  }
+  const priority = get("priority");
+  if (priority && LEAD_PRIORITIES.includes(priority)) {
+    where.push("l.priority = ?");
+    params.push(priority);
+  }
+  const assigned = get("assigned_to");
+  if (assigned === "unassigned") {
+    where.push("l.assigned_to IS NULL");
+  } else if (assigned && Number(assigned)) {
+    where.push("l.assigned_to = ?");
+    params.push(Number(assigned));
+  }
+
+  const vmin = get("value_min");
+  if (vmin !== "" && !isNaN(Number(vmin))) {
+    where.push("l.estimated_value >= ?");
+    params.push(Number(vmin));
+  }
+  const vmax = get("value_max");
+  if (vmax !== "" && !isNaN(Number(vmax))) {
+    where.push("l.estimated_value <= ?");
+    params.push(Number(vmax));
+  }
+
+  const dateRange: [string, string, string][] = [
+    ["close_from", "l.expected_close_date", ">="],
+    ["close_to", "l.expected_close_date", "<="],
+    ["created_from", "DATE(l.created_at)", ">="],
+    ["created_to", "DATE(l.created_at)", "<="],
+  ];
+  for (const [k, col, op] of dateRange) {
+    const d = cleanDate(get(k));
+    if (d) {
+      where.push(`${col} ${op} ?`);
+      params.push(d);
+    }
+  }
+
+  return { whereSql: where.join(" AND "), params };
+}
+
+/* Digits-only phone key (last 10 digits) for duplicate checks */
+export function phoneKey(v: unknown): string {
+  const d = String(v ?? "").replace(/\D/g, "");
+  return d.length >= 10 ? d.slice(-10) : d;
+}
+
+/* Next N lead numbers for a company (call inside a transaction) */
+export async function nextLeadNumberBase(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  conn: any,
+  companyId: number
+): Promise<number> {
+  const [maxRows] = await conn.query(
+    `SELECT MAX(CAST(SUBSTRING(lead_number, 6) AS UNSIGNED)) AS mx
+       FROM ${LEADS_TABLE} WHERE company_id = ? FOR UPDATE`,
+    [companyId]
+  );
+  return Number((maxRows as { mx: number | null }[])[0]?.mx || 0);
+}
+
+export function formatLeadNumber(n: number): string {
+  return `LEAD-${String(n).padStart(4, "0")}`;
+}
