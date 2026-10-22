@@ -48,9 +48,12 @@ const METHOD: Record<string, string> = {
   bank_transfer: "Bank Transfer",
   jazzcash: "JazzCash",
   easypaisa: "Easypaisa",
+  wallet: "JazzCash / Easypaisa",
   cash: "Cash",
-  card: "Card",
-  none: "No advance",
+  card: "Card (POS machine)",
+  cheque: "Cheque",
+  other: "Other / old records",
+  none: "Not paid",
 };
 const hrs = (h: unknown) => {
   const x = N(h);
@@ -121,7 +124,7 @@ export default function SalesReportPage() {
                 <Tile label="Customers" value={String(N(t.customers))} sub="who bought" />
                 <Tile label="Online sales" value={rs(N(online?.sales))} sub={`${N(online?.bills)} bills · ${pct(N(online?.sales), N(t.sales))}%`} />
                 <Tile label="Walk-in sales" value={rs(N(walkin?.sales))} sub={`${N(walkin?.bills)} bills · ${pct(N(walkin?.sales), N(t.sales))}%`} />
-                <Tile label="COD to collect" value={rs(N(data.cod_due.cod_due))} tone="text-amber-600" sub={`${N(data.cod_due.n)} online orders`} />
+                <Tile label="Credit to collect" value={rs(N(data.cod_due.cod_due))} tone="text-amber-600" sub={`${N(data.cod_due.n)} customers with balance due`} />
               </div>
 
               <Card title="📈 Sales per Day" hint="Hover a bar for the amount and number of bills">
@@ -210,8 +213,8 @@ export default function SalesReportPage() {
                   <BarList rows={[5, 4, 3, 2, 1].map((k) => ({ label: "★".repeat(k), value: N(data.reviews.find((r) => N(r.k) === k)?.n) }))} max={Math.max(1, ...data.reviews.map((r) => N(r.n)))} empty="No reviews yet" />
                 </Card>
 
-                <Card title="💳 Advance Payments" hint="How online customers paid the advance">
-                  <BarList rows={data.advance_methods.map((m) => ({ label: METHOD[String(m.k)] || String(m.k), value: N(m.n), revenue: N(m.amount) }))} showRevenue empty="No online orders yet" />
+                <Card title="💳 Payments Received" hint="How customers paid (POS + online orders)">
+                  <BarList rows={data.advance_methods.map((m) => ({ label: METHOD[String(m.k)] || String(m.k), value: N(m.n), revenue: N(m.amount) }))} showRevenue empty="No payments in this period" />
                 </Card>
 
                 <Card title="🚚 Online Orders by City" hint="Where you deliver the most">
