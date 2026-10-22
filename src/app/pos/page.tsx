@@ -65,6 +65,36 @@ interface CartItem {
   available_stock: number;
 }
 
+/* online order handed over from a won lead (see /dispatch) */
+interface OnlineOrder {
+  id: number;
+  sales_order_id: number;
+  order_number: string;
+  customer_id: number;
+  advance_amount: number;
+  cod_amount: number;
+  total_amount: number;
+  specs_note: string | null;
+  delivery_name: string;
+  delivery_phone: string;
+  delivery_phone2: string | null;
+  delivery_house: string | null;
+  delivery_street: string | null;
+  delivery_area: string | null;
+  delivery_landmark: string | null;
+  delivery_city: string;
+  items: {
+    product_id: number | null;
+    description: string;
+    product_name: string | null;
+    sku: string | null;
+    quantity: number;
+    unit_price: number;
+    tax_rate: number;
+    discount_percent: number;
+  }[];
+}
+
 interface InvoiceResult {
   id: number;
   invoice_number: string;
@@ -190,6 +220,81 @@ function POSContent() {
   const [error, setError] = useState("");
   const [showSuccess, setShowSuccess] = useState<InvoiceResult | null>(null);
   const [showCheckout, setShowCheckout] = useState(false);
+  const [pendingOrders, setPendingOrders] = useState<OnlineOrder[]>([]);
+  const [linkedOrder, setLinkedOrder] = useState<OnlineOrder | null>(null);
+  const [showQuickCustomer, setShowQuickCustomer] = useState(false);
+  const [notice, setNotice] = useState("");
+
+  /* ---------- Online orders (won leads) ---------- */
+  const loadOrderIntoCart = useCallback((o: OnlineOrder) => {
+    const items: CartItem[] = o.items.map((it) => {
+      const item: CartItem = {
+        key: genKey(),
+        product_id: it.product_id || 0,
+        name: it.product_name || it.description || "Item",
+        sku: it.sku || (it.product_id ? "" : "CUSTOM"),
+        barcode: null,
+        unit_short_name: "pcs",
+        category_name: null,
+        quantity: Number(it.quantity) || 1,
+        unit_price: Number(it.unit_price) || 0,
+        tax_rate: Number(it.tax_rate) || 0,
+        discount_percent: Number(it.discount_percent) || 0,
+        available_stock: 0,
+        line_total: 0,
+      };
+      item.line_total = computeLineTotal(item);
+      return item;
+    });
+    setCart(items);
+    setLinkedOrder(o);
+    setReference(o.order_number);
+    setNotes(
+      `Deliver to ${o.delivery_name}, ${o.delivery_phone}${o.delivery_phone2 ? " / " + o.delivery_phone2 : ""} — ` +
+        [o.delivery_house, o.delivery_street, o.delivery_area, o.delivery_landmark && (/^near\b/i.test(o.delivery_landmark) ? o.delivery_landmark : `Near ${o.delivery_landmark}`), o.delivery_city]
+          .filter(Boolean)
+          .join(", ")
+    );
+    setAmountPaid(String(Number(o.advance_amount) || 0));
+    setOrderDiscountPercent(0);
+    setShippingFee(0);
+  }, []);
+
+  const selectCustomer = useCallback(async (c: Customer | null) => {
+    setSelectedCustomer(c);
+    setPendingOrders([]);
+    if (!c) {
+      setLinkedOrder(null);
+      return;
+    }
+    try {
+      const r = await fetch(`/api/dispatch?status=pending&customer_id=${c.id}`, { credentials: "include" });
+      if (r.ok) setPendingOrders((await r.json()).data || []);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  /* open POS with ?order=<sales_order_id> from the dispatch page */
+  useEffect(() => {
+    const soId = Number(new URLSearchParams(window.location.search).get("order"));
+    if (!soId) return;
+    (async () => {
+      try {
+        const r = await fetch(`/api/dispatch?status=all&sales_order_id=${soId}`, { credentials: "include" });
+        const o: OnlineOrder | undefined = r.ok ? (await r.json()).data?.[0] : undefined;
+        if (!o) return;
+        const cr = await fetch(`/api/customers/${o.customer_id}`, { credentials: "include" });
+        if (!cr.ok) return;
+        const c = (await cr.json()) as Customer;
+        setSelectedCustomer(c);
+        setPendingOrders([o]);
+        loadOrderIntoCart(o);
+      } catch {
+        /* ignore */
+      }
+    })();
+  }, [loadOrderIntoCart]);
 
   /* ---------- Cart ops ---------- */
   const addToCart = useCallback((product: Product) => {
@@ -349,8 +454,10 @@ function POSContent() {
         tax_total: Math.round(totals.taxTotal * 100) / 100,
         shipping_total: Math.round(totals.shipping * 100) / 100,
         grand_total: Math.round(totals.grandTotal * 100) / 100,
+        sales_order_id: linkedOrder ? linkedOrder.sales_order_id : null,
         items: cart.map((it) => ({
-          product_id: it.product_id,
+          product_id: it.product_id || null,
+          description: it.name,
           quantity: Number(it.quantity) || 0,
           unit_price: Number(it.unit_price) || 0,
           tax_rate: Number(it.tax_rate) || 0,
@@ -388,6 +495,8 @@ function POSContent() {
       /* reset */
       setCart([]);
       setSelectedCustomer(null);
+      setLinkedOrder(null);
+      setPendingOrders([]);
       setAmountPaid("");
       setOrderDiscountPercent(0);
       setShippingFee(0);
@@ -439,20 +548,91 @@ function POSContent() {
               <h2 className="text-sm font-semibold text-gray-800">
                 Customer
               </h2>
-              {selectedCustomer && (
+              {selectedCustomer ? (
                 <button
                   type="button"
-                  onClick={() => setSelectedCustomer(null)}
+                  onClick={() => selectCustomer(null)}
                   className="text-xs font-medium text-gray-500 hover:text-red-600"
                 >
                   Change
                 </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShowQuickCustomer(true)}
+                  className="text-xs font-semibold text-[#0fa846] hover:underline"
+                >
+                  + New Customer
+                </button>
               )}
             </div>
+            {notice && (
+              <div className="mb-2 rounded-md bg-blue-50 px-3 py-2 text-xs text-blue-900">
+                {notice}
+                <button className="ml-2 font-semibold underline" onClick={() => setNotice("")}>OK</button>
+              </div>
+            )}
             {selectedCustomer ? (
               <CustomerCard customer={selectedCustomer} />
             ) : (
-              <CustomerSearch onSelect={setSelectedCustomer} />
+              <CustomerSearch onSelect={selectCustomer} />
+            )}
+            {selectedCustomer && pendingOrders.length > 0 && (
+              <div className="mt-3 space-y-2">
+                {pendingOrders.map((o) => {
+                  const active = linkedOrder?.sales_order_id === o.sales_order_id;
+                  return (
+                    <div
+                      key={o.id}
+                      className={`rounded-md border px-3 py-2 text-xs ${
+                        active ? "border-[#17D65D] bg-[#17D65D]/10" : "border-green-200 bg-green-50"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold text-gray-900">
+                          🟢 Online order {o.order_number}
+                        </span>
+                        {active ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setLinkedOrder(null);
+                              setCart([]);
+                              setReference("");
+                              setNotes("");
+                              setAmountPaid("");
+                            }}
+                            className="font-semibold text-gray-500 hover:text-red-600"
+                          >
+                            Unlink
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => loadOrderIntoCart(o)}
+                            className="rounded bg-[#17D65D] px-2 py-1 font-bold text-black hover:bg-[#15c455]"
+                          >
+                            Load order
+                          </button>
+                        )}
+                      </div>
+                      <p className="mt-1 text-gray-700">
+                        {o.items.map((it) => `${it.product_name || it.description} ×${Number(it.quantity)}`).join(", ")}
+                      </p>
+                      <p className="mt-0.5 text-gray-600">
+                        Total {formatCurrency(o.total_amount)} · Advance{" "}
+                        <b className="text-green-700">{formatCurrency(o.advance_amount)}</b> · COD{" "}
+                        <b className="text-red-600">{formatCurrency(o.cod_amount)}</b>
+                      </p>
+                      {active && (
+                        <p className="mt-1 font-semibold text-[#0fa846]">
+                          ✓ Loaded — the bill will be linked to this order (advance counted as paid).
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </div>
 
@@ -747,6 +927,21 @@ function POSContent() {
       </div>
 
       {/* CHECKOUT MODAL */}
+      {showQuickCustomer && (
+        <QuickCustomerModal
+          onClose={() => setShowQuickCustomer(false)}
+          onDone={(c, existing) => {
+            setShowQuickCustomer(false);
+            selectCustomer(c);
+            setNotice(
+              existing
+                ? `This number already belongs to ${c.customer_code} — ${c.name}. Selected the existing customer (no duplicate).`
+                : `New customer ${c.customer_code} added.`
+            );
+          }}
+        />
+      )}
+
       {showCheckout && selectedCustomer && (
         <CheckoutModal
           customer={selectedCustomer}
@@ -874,6 +1069,68 @@ function CustomerCard({ customer }: { customer: Customer }) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   QUICK ADD CUSTOMER (walk-in) — phone checked for duplicates
+============================================================ */
+function QuickCustomerModal({
+  onClose,
+  onDone,
+}: {
+  onClose: () => void;
+  onDone: (c: Customer, existing: boolean) => void;
+}) {
+  const [f, setF] = useState({ name: "", phone: "", whatsapp: "", city: "", address: "" });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    if (!f.name.trim()) return setError("Name is required");
+    if (f.phone.replace(/\D/g, "").length < 10) return setError("Enter a valid phone number");
+    setSaving(true);
+    try {
+      const r = await fetch("/api/customers/quick", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(f),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || "Failed to add customer");
+      onDone(j.data as Customer, !!j.existing);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed");
+      setSaving(false);
+    }
+  };
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <form onSubmit={submit} className="w-full max-w-md rounded-lg bg-white p-5 shadow-xl">
+        <h3 className="text-base font-semibold text-gray-900">New Customer (walk-in)</h3>
+        <p className="mt-0.5 text-xs text-gray-500">
+          If this number is already a customer, the existing one is selected — no duplicates.
+        </p>
+        <div className="mt-4 space-y-3">
+          <input autoFocus value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="Name *" className={inputCls} />
+          <input value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value })} placeholder="Phone * (03XX XXXXXXX)" inputMode="tel" className={inputCls} />
+          <input value={f.whatsapp} onChange={(e) => setF({ ...f, whatsapp: e.target.value })} placeholder="WhatsApp (if different)" inputMode="tel" className={inputCls} />
+          <input value={f.city} onChange={(e) => setF({ ...f, city: e.target.value })} placeholder="City" className={inputCls} />
+          <input value={f.address} onChange={(e) => setF({ ...f, address: e.target.value })} placeholder="Address" className={inputCls} />
+        </div>
+        {error && <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-xs text-red-700">{error}</p>}
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
+            Cancel
+          </button>
+          <button type="submit" disabled={saving} className={btnPrimary}>
+            {saving ? "Saving..." : "Add & Select"}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
