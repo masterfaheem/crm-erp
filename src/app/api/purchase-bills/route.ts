@@ -1,16 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
+import { ensureStockTable, syncDocStock, nextDocNumber } from "@/lib/ledger";
 
 async function nextBillNumber(companyId: number): Promise<string> {
-  const year = new Date().getFullYear();
-  const [row] = await query<Array<{ c: number }>>(
-    `SELECT COUNT(*) AS c FROM purchase_bills
-      WHERE company_id = ? AND YEAR(created_at) = ?`,
-    [companyId, year]
-  );
-  const seq = (row?.c ?? 0) + 1;
-  return `PB-${year}-${String(seq).padStart(4, "0")}`;
+  return nextDocNumber("purchase_bills", "bill_number", "PB", companyId);
 }
 
 export async function GET(req: NextRequest) {
@@ -123,12 +117,15 @@ export async function POST(req: NextRequest) {
     }> = Array.isArray(body.items) ? body.items : [];
 
     if (!supplier_id) {
+      conn.release();
       return NextResponse.json({ error: "Supplier is required." }, { status: 400 });
     }
     if (!bill_date) {
+      conn.release();
       return NextResponse.json({ error: "Bill date is required." }, { status: 400 });
     }
     if (!items.length) {
+      conn.release();
       return NextResponse.json({ error: "At least one line item is required." }, { status: 400 });
     }
 
@@ -158,6 +155,7 @@ export async function POST(req: NextRequest) {
 
     const balance = Math.max(0, grand_total - paid_amount);
 
+    await ensureStockTable();
     await conn.beginTransaction();
 
     const bill_number = await nextBillNumber(companyId);
@@ -193,6 +191,9 @@ export async function POST(req: NextRequest) {
         ]
       );
     }
+
+    // stock in (+qty) for tracked products
+    await syncDocStock(conn, companyId, "purchase_bill", billId, userId);
 
     await conn.commit();
     conn.release();
