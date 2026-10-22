@@ -8,10 +8,10 @@ import { CitySelect, Field, inputCls } from "./leadUi";
 ============================================================ */
 const PAYMENT_METHODS = [
   { value: "bank_transfer", label: "Bank Transfer" },
+  { value: "cash", label: "Cash" },
   { value: "jazzcash", label: "JazzCash" },
   { value: "easypaisa", label: "Easypaisa" },
-  { value: "cash", label: "Cash" },
-  { value: "card", label: "Card" },
+  { value: "card", label: "Card (POS machine)" },
 ];
 
 export interface ConvertLead {
@@ -84,8 +84,9 @@ export default function ConvertOrderModal({
   });
   const [items, setItems] = useState<Item[]>([newItem()]);
   const [specs, setSpecs] = useState(lead.requirement_note || "");
-  const [advance, setAdvance] = useState("");
-  const [method, setMethod] = useState("");
+  // prepaid business: payment defaults to the full order total until edited
+  const [advance, setAdvance] = useState<string | null>(null);
+  const [method, setMethod] = useState("bank_transfer");
   const [reference, setReference] = useState("");
   const [dispatchDate, setDispatchDate] = useState(() =>
     new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 10)
@@ -109,7 +110,7 @@ export default function ConvertOrderModal({
     () => items.reduce((s, it) => s + (Number(it.quantity) || 0) * (Number(it.unit_price) || 0), 0),
     [items]
   );
-  const adv = Number(advance) || 0;
+  const adv = advance === null ? total : Number(advance) || 0;
   const cod = Math.max(0, total - adv);
 
   const setItem = (key: string, patch: Partial<Item>) =>
@@ -131,8 +132,15 @@ export default function ConvertOrderModal({
       if (it.mode === "custom" && !it.description.trim()) return setError("Write the model name for the custom item");
       if (!(Number(it.unit_price) > 0)) return setError("Enter the price for every item");
     }
-    if (adv > total) return setError("Advance cannot be more than the total");
-    if (adv > 0 && !method) return setError("Select how the advance was received");
+    if (adv > total) return setError("Payment cannot be more than the total");
+    if (adv > 0 && !method) return setError("Select how the payment was received");
+    if (
+      cod > 0 &&
+      !window.confirm(
+        `Only ${rs(adv)} received of ${rs(total)}.\n${rs(cod)} will stay on the customer's khata as credit (balance due). Continue?`
+      )
+    )
+      return;
 
     setSaving(true);
     try {
@@ -264,8 +272,26 @@ export default function ConvertOrderModal({
           <div>
             <h3 className="mb-2 text-sm font-bold text-gray-900">💰 Payment</h3>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <Field label="Advance received (Rs)">
-                <input type="number" min="0" value={advance} onChange={(e) => setAdvance(e.target.value)} placeholder="0" className={inputCls} />
+              <Field label="Payment received (Rs)">
+                <div className="flex gap-1.5">
+                  <input
+                    type="number"
+                    min="0"
+                    value={advance === null ? (total ? String(total) : "") : advance}
+                    onChange={(e) => setAdvance(e.target.value)}
+                    placeholder="0"
+                    className={inputCls}
+                  />
+                  {advance !== null && adv !== total && (
+                    <button
+                      type="button"
+                      onClick={() => setAdvance(null)}
+                      className="shrink-0 rounded-lg border border-gray-200 px-2 text-[11px] font-semibold text-gray-700 hover:bg-gray-50"
+                    >
+                      Full
+                    </button>
+                  )}
+                </div>
               </Field>
               <Field label="Received via">
                 <select value={method} onChange={(e) => setMethod(e.target.value)} disabled={!adv} className={inputCls}>
@@ -285,12 +311,12 @@ export default function ConvertOrderModal({
                 <p className="text-base font-bold text-gray-900">{rs(total)}</p>
               </div>
               <div>
-                <p className="text-[10px] font-semibold uppercase text-gray-500">Advance</p>
+                <p className="text-[10px] font-semibold uppercase text-gray-500">Paid</p>
                 <p className="text-base font-bold text-green-700">{rs(adv)}</p>
               </div>
               <div>
-                <p className="text-[10px] font-semibold uppercase text-gray-500">COD (to collect)</p>
-                <p className="text-base font-bold text-red-600">{rs(cod)}</p>
+                <p className="text-[10px] font-semibold uppercase text-gray-500">{cod > 0 ? "Credit (balance due)" : "Status"}</p>
+                <p className={`text-base font-bold ${cod > 0 ? "text-red-600" : "text-green-700"}`}>{cod > 0 ? rs(cod) : "✓ Fully paid"}</p>
               </div>
             </div>
           </div>
