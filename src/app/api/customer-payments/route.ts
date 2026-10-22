@@ -1,63 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, getPool } from "@/lib/db";
+import { ensureLedgerReady } from "@/lib/ledgerSetup";
 import { requireUser, unauthorized } from "@/lib/requireUser";
-
-async function nextPaymentNumber(companyId: number): Promise<string> {
-  const year = new Date().getFullYear();
-  const [row] = await query<Array<{ c: number }>>(
-    "SELECT COUNT(*) AS c FROM customer_payments WHERE company_id = ? AND YEAR(created_at) = ?",
-    [companyId, year]
-  );
-  const seq = (row?.c ?? 0) + 1;
-  return `CP-${year}-${String(seq).padStart(4, "0")}`;
-}
-
-/** Recalculate paid_amount/balance/status on an invoice */
-async function recalcInvoice(
-  conn: any,
-  invoiceId: number,
-  companyId: number
-): Promise<void> {
-  const [sum] = await conn.query(
-    `SELECT COALESCE(SUM(amount), 0) AS paid
-       FROM customer_payments
-      WHERE company_id = ? AND invoice_id = ? AND status = 'cleared'`,
-    [companyId, invoiceId]
-  ) as any[];
-  let paid = Number(sum?.paid ?? 0);
-
-  /* advance taken at "Convert to Order" (online orders) also counts as paid */
-  try {
-    const [adv] = await conn.query(
-      `SELECT COALESCE(SUM(advance_amount), 0) AS adv FROM crm_order_handovers
-        WHERE company_id = ? AND invoice_id = ?`,
-      [companyId, invoiceId]
-    ) as any[];
-    paid += Number(adv?.adv ?? 0);
-  } catch {
-    /* handover table not created yet */
-  }
-
-  const [inv] = await conn.query(
-    "SELECT grand_total FROM invoices WHERE id = ? AND company_id = ?",
-    [invoiceId, companyId]
-  ) as any[];
-  const total = Number(inv?.grand_total ?? 0);
-  const balance = Math.max(0, total - paid);
-
-  let status = "unpaid";
-  if (paid >= total && total > 0) status = "paid";
-  else if (paid > 0) status = "partially_paid";
-
-  await conn.query(
-    `UPDATE invoices SET paid_amount = ?, balance = ?, status = ? WHERE id = ? AND company_id = ?`,
-    [paid, balance, status, invoiceId, companyId]
-  );
-}
+import { nextCustomerPaymentNumber, recalcCustomer, recalcInvoice } from "@/lib/ledger";
 
 export async function GET(req: NextRequest) {
   const user = await requireUser(req);
   if (!user) return unauthorized();
+  await ensureLedgerReady().catch((e) => console.error("ledger setup", e));
   const companyId = user.company_id;
 
   try {
@@ -136,12 +86,12 @@ export async function POST(req: NextRequest) {
     const notes = body.notes ? String(body.notes).trim() : null;
     const invoice_id = body.invoice_id ? Number(body.invoice_id) : null;
 
-    if (!customer_id) return NextResponse.json({ error: "Customer is required." }, { status: 400 });
-    if (!payment_date) return NextResponse.json({ error: "Payment date is required." }, { status: 400 });
-    if (!amount || amount <= 0) return NextResponse.json({ error: "Amount must be > 0." }, { status: 400 });
+    if (!customer_id) { conn.release(); return NextResponse.json({ error: "Customer is required." }, { status: 400 }); }
+    if (!payment_date) { conn.release(); return NextResponse.json({ error: "Payment date is required." }, { status: 400 }); }
+    if (!amount || amount <= 0) { conn.release(); return NextResponse.json({ error: "Amount must be > 0." }, { status: 400 }); }
 
     await conn.beginTransaction();
-    const payment_number = await nextPaymentNumber(companyId);
+    const payment_number = await nextCustomerPaymentNumber(conn, companyId);
 
     const [ins] = await conn.query<any>(
       `INSERT INTO customer_payments
@@ -155,9 +105,8 @@ export async function POST(req: NextRequest) {
     );
     const paymentId = ins.insertId;
 
-    if (invoice_id) {
-      await recalcInvoice(conn, invoice_id, companyId);
-    }
+    if (invoice_id) await recalcInvoice(conn, invoice_id, companyId);
+    else await recalcCustomer(conn, companyId, customer_id);
 
     await conn.commit(); conn.release();
 
