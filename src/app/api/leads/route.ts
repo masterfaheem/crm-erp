@@ -7,15 +7,18 @@ import {
   LEAD_SELECT,
   LEAD_SOURCE_VALUES,
   LEAD_STATUSES,
+  buildLeadFilters,
   cleanDate,
   cleanStr,
   ensureLeadsTable,
+  formatLeadNumber,
   mapLeadRow,
+  nextLeadNumberBase,
 } from "@/lib/leadsTable";
 
 /* ============================================================
    GET /api/leads
-   ?search= ?status= ?priority= ?page= ?limit=
+   ?page= ?limit= + all filters (see buildLeadFilters)
 ============================================================ */
 export async function GET(req: NextRequest) {
   try {
@@ -24,9 +27,6 @@ export async function GET(req: NextRequest) {
     await ensureLeadsTable();
 
     const sp = new URL(req.url).searchParams;
-    const search = sp.get("search")?.trim() || "";
-    const status = sp.get("status")?.trim() || "";
-    const priority = sp.get("priority")?.trim() || "";
     const page = Math.max(1, parseInt(sp.get("page") || "1", 10) || 1);
     const limit = Math.min(
       200,
@@ -34,28 +34,7 @@ export async function GET(req: NextRequest) {
     );
     const offset = (page - 1) * limit;
 
-    const where: string[] = ["l.company_id = ?"];
-    const params: unknown[] = [user.company_id];
-
-    if (search) {
-      where.push(
-        `(l.first_name LIKE ? OR l.last_name LIKE ? OR l.company_name LIKE ?
-          OR l.email LIKE ? OR l.phone LIKE ? OR l.whatsapp LIKE ?
-          OR l.lead_number LIKE ? OR l.city LIKE ?)`
-      );
-      const s = `%${search}%`;
-      params.push(s, s, s, s, s, s, s, s);
-    }
-    if (status && LEAD_STATUSES.includes(status)) {
-      where.push("l.status = ?");
-      params.push(status);
-    }
-    if (priority && LEAD_PRIORITIES.includes(priority)) {
-      where.push("l.priority = ?");
-      params.push(priority);
-    }
-
-    const whereSql = where.join(" AND ");
+    const { whereSql, params } = buildLeadFilters(sp, user.company_id);
     const pool = getPool();
 
     const [countRows] = await pool.query(
@@ -121,13 +100,8 @@ export async function POST(req: NextRequest) {
       await conn.beginTransaction();
 
       // Next lead number: LEAD-0001, LEAD-0002, ...
-      const [maxRows] = await conn.query(
-        `SELECT MAX(CAST(SUBSTRING(lead_number, 6) AS UNSIGNED)) AS mx
-           FROM ${LEADS_TABLE} WHERE company_id = ? FOR UPDATE`,
-        [user.company_id]
-      );
-      const next = Number((maxRows as { mx: number | null }[])[0]?.mx || 0) + 1;
-      const leadNumber = `LEAD-${String(next).padStart(4, "0")}`;
+      const next = (await nextLeadNumberBase(conn, user.company_id)) + 1;
+      const leadNumber = formatLeadNumber(next);
 
       const [result] = await conn.query(
         `INSERT INTO ${LEADS_TABLE}
