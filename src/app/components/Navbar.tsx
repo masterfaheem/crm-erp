@@ -163,6 +163,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Sales",
     icon: ICONS.sales,
     children: [
+      { label: "📦 Pending Dispatch", href: "/dispatch" },
       { label: "Quotations", href: "/sales/quotations" },
       { label: "Sales Orders", href: "/sales/sales-orders" },
       { label: "Invoices", href: "/sales/invoices" },
