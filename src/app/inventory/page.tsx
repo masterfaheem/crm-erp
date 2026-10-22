@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Navbar from "@/app/components/Navbar";
+import StockModal from "./StockModal";
 
 /* ============================================================
    TYPES
@@ -195,6 +196,7 @@ function InventoryContent() {
   const [typeFilter, setTypeFilter] = useState("");
   const [page, setPage] = useState(1);
   const [view, setView] = useState<"table" | "cards">("table");
+  const [stockModal, setStockModal] = useState<{ id: number; name: string; tab: "adjust" | "history" } | null>(null);
 
   /* ---- Load categories ---- */
   useEffect(() => {
@@ -557,9 +559,19 @@ function InventoryContent() {
       ) : rows.length === 0 ? (
         <EmptyState hasFilters={hasFilters} />
       ) : view === "table" ? (
-        <StockTable rows={rows} />
+        <StockTable rows={rows} onOpen={(r, tab) => setStockModal({ id: r.id, name: r.name, tab })} />
       ) : (
-        <StockCards rows={rows} />
+        <StockCards rows={rows} onOpen={(r, tab) => setStockModal({ id: r.id, name: r.name, tab })} />
+      )}
+
+      {stockModal && (
+        <StockModal
+          productId={stockModal.id}
+          productName={stockModal.name}
+          initialTab={stockModal.tab}
+          onClose={() => setStockModal(null)}
+          onChanged={fetchStock}
+        />
       )}
 
       {/* PAGINATION */}
@@ -644,7 +656,9 @@ function KpiCard({
 /* ============================================================
    STOCK TABLE VIEW
 ============================================================ */
-function StockTable({ rows }: { rows: StockRow[] }) {
+type OpenFn = (r: StockRow, tab: "adjust" | "history") => void;
+
+function StockTable({ rows, onOpen }: { rows: StockRow[]; onOpen: OpenFn }) {
   return (
     <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
       <div className="overflow-x-auto">
@@ -674,6 +688,9 @@ function StockTable({ rows }: { rows: StockRow[] }) {
               </th>
               <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
                 Health
+              </th>
+              <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500">
+                Actions
               </th>
             </tr>
           </thead>
@@ -771,6 +788,22 @@ function StockTable({ rows }: { rows: StockRow[] }) {
                       {style.label}
                     </span>
                   </td>
+                  <td className="whitespace-nowrap px-4 py-3.5 text-right">
+                    <div className="inline-flex gap-1.5">
+                      <button
+                        onClick={() => onOpen(r, "adjust")}
+                        className="rounded-md border border-gray-200 px-2 py-1 text-xs font-medium text-gray-700 hover:border-[#17D65D] hover:text-gray-900"
+                      >
+                        Adjust
+                      </button>
+                      <button
+                        onClick={() => onOpen(r, "history")}
+                        className="rounded-md border border-gray-200 px-2 py-1 text-xs font-medium text-gray-700 hover:border-[#17D65D] hover:text-gray-900"
+                      >
+                        History
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               );
             })}
@@ -784,7 +817,7 @@ function StockTable({ rows }: { rows: StockRow[] }) {
 /* ============================================================
    STOCK CARDS VIEW
 ============================================================ */
-function StockCards({ rows }: { rows: StockRow[] }) {
+function StockCards({ rows, onOpen }: { rows: StockRow[]; onOpen: OpenFn }) {
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
       {rows.map((r) => {
@@ -881,6 +914,20 @@ function StockCards({ rows }: { rows: StockRow[] }) {
                   Max: {r.max_stock > 0 ? formatNumber(r.max_stock) : "—"}
                 </span>
               </div>
+            </div>
+            <div className="mt-3 flex gap-2">
+              <button
+                onClick={() => onOpen(r, "adjust")}
+                className="flex-1 rounded-md border border-gray-200 py-1.5 text-xs font-medium text-gray-700 hover:border-[#17D65D]"
+              >
+                Adjust
+              </button>
+              <button
+                onClick={() => onOpen(r, "history")}
+                className="flex-1 rounded-md border border-gray-200 py-1.5 text-xs font-medium text-gray-700 hover:border-[#17D65D]"
+              >
+                History
+              </button>
             </div>
           </div>
         );
