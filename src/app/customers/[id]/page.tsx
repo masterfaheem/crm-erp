@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import Navbar from "@/app/components/Navbar";
+import KhataCard from "./KhataCard";
 
 /* ============================================================
    TYPES
@@ -347,14 +348,16 @@ function CustomerDetailContent() {
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard
           label="Current Balance"
-          value={formatCurrency(balanceNum, customer.currency_code)}
+          value={formatCurrency(Math.abs(balanceNum), customer.currency_code)}
           valueClass={
-            balanceNum > 0 ? "text-red-600" : "text-gray-900"
+            balanceNum > 0 ? "text-red-600" : balanceNum < 0 ? "text-[#0fa846]" : "text-gray-900"
           }
           hint={
-            customer.balance_type === "credit"
-              ? "We owe customer"
-              : "Customer owes us"
+            balanceNum > 0
+              ? "Customer owes us (balance due)"
+              : balanceNum < 0
+              ? "Advance — we owe customer"
+              : "Khata clear"
           }
         />
         <KpiCard
@@ -383,6 +386,9 @@ function CustomerDetailContent() {
           }`}
         />
       </div>
+
+      {/* ============ KHATA ============ */}
+      <KhataCard customerId={customer.id} />
 
       {/* ============ MAIN GRID ============ */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">

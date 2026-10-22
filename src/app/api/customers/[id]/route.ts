@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
+import { ensureLedgerReady } from "@/lib/ledgerSetup";
+import { recalcCustomer } from "@/lib/ledger";
 import { verifySession, SESSION_COOKIE_NAME } from "@/lib/auth";
 
 async function requireUser(req: NextRequest) {
@@ -70,6 +72,7 @@ export async function GET(
     if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+  await ensureLedgerReady().catch((e) => console.error("ledger setup", e));
 
     const pool = getPool();
 
@@ -417,6 +420,8 @@ export async function PUT(
         authUser.company_id,
       ]
     );
+    // opening balance may have changed -> refresh khata
+    await recalcCustomer(conn, authUser.company_id, Number(id));
 
     /* ---- Audit log ---- */
     try {

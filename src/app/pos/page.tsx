@@ -211,7 +211,8 @@ function POSContent() {
   /* ---------- Order-level state ---------- */
   const [orderDiscountPercent, setOrderDiscountPercent] = useState(0);
   const [shippingFee, setShippingFee] = useState(0);
-  const [paymentMethod, setPaymentMethod] = useState("cash");
+  const [paymentMethod, setPaymentMethod] = useState("bank_transfer");
+  const [paymentRef, setPaymentRef] = useState("");
   const [amountPaid, setAmountPaid] = useState<string>("");
   const [notes, setNotes] = useState("");
   const [reference, setReference] = useState("");
@@ -464,12 +465,11 @@ function POSContent() {
       setError("Cart is empty.");
       return;
     }
-    if (paid > 0 && paid < totals.grandTotal && paymentMethod === "cash") {
+    if (paid < totals.grandTotal) {
       if (
         !window.confirm(
-          `Amount paid (${formatCurrency(paid)}) is less than total (${formatCurrency(
-            totals.grandTotal
-          )}). Save as partial payment?`
+          `Received ${formatCurrency(paid)} of ${formatCurrency(totals.grandTotal)}.\n` +
+            `${formatCurrency(totals.grandTotal - paid)} will go to ${selectedCustomer.name}'s khata as credit (balance due). Continue?`
         )
       )
         return;
@@ -482,8 +482,9 @@ function POSContent() {
         invoice_date: new Date().toISOString().slice(0, 10),
         reference: reference.trim() || null,
         notes: notes.trim() || null,
-        payment_method: paymentMethod,
-        amount_paid: paid,
+        payment_method: paymentMethod === "credit" ? "none" : paymentMethod,
+        payment_reference: paymentRef.trim() || null,
+        amount_paid: paymentMethod === "credit" ? 0 : paid,
         order_discount_percent: Number(orderDiscountPercent) || 0,
         shipping_fee: Number(shippingFee) || 0,
         subtotal: Math.round(totals.subtotal * 100) / 100,
@@ -539,6 +540,8 @@ function POSContent() {
       setPendingOrders([]);
       refreshCounts();
       setAmountPaid("");
+      setPaymentRef("");
+      setPaymentMethod("bank_transfer");
       setOrderDiscountPercent(0);
       setShippingFee(0);
       setNotes("");
@@ -681,13 +684,19 @@ function POSContent() {
                         {o.items.map((it) => `${it.product_name || it.description} ×${Number(it.quantity)}`).join(", ")}
                       </p>
                       <p className="mt-0.5 text-gray-600">
-                        Total {formatCurrency(o.total_amount)} · Advance{" "}
-                        <b className="text-green-700">{formatCurrency(o.advance_amount)}</b> · COD{" "}
-                        <b className="text-red-600">{formatCurrency(o.cod_amount)}</b>
+                        Total {formatCurrency(o.total_amount)} · Paid{" "}
+                        <b className="text-green-700">{formatCurrency(o.advance_amount)}</b>
+                        {Number(o.cod_amount) > 0 ? (
+                          <>
+                            {" "}· Balance due <b className="text-red-600">{formatCurrency(o.cod_amount)}</b>
+                          </>
+                        ) : (
+                          <b className="text-green-700"> · Fully paid</b>
+                        )}
                       </p>
                       {active && (
                         <p className="mt-1 font-semibold text-[#0fa846]">
-                          ✓ Loaded — the bill will be linked to this order (advance counted as paid).
+                          ✓ Loaded — the bill will be linked to this order (its payment is already counted).
                         </p>
                       )}
                     </div>
@@ -954,7 +963,15 @@ function POSContent() {
                   <button
                     type="button"
                     onClick={() => {
-                      setAmountPaid(String(totals.grandTotal));
+                      // prepaid: default to the full bill. Online order -> what was already received
+                      setAmountPaid(
+                        String(
+                          linkedOrder
+                            ? Math.min(Number(linkedOrder.advance_amount) || 0, totals.grandTotal)
+                            : totals.grandTotal
+                        )
+                      );
+                      if (paymentMethod === "credit") setPaymentMethod("bank_transfer");
                       setShowCheckout(true);
                     }}
                     disabled={!selectedCustomer}
@@ -1035,6 +1052,9 @@ function POSContent() {
           setPaymentMethod={setPaymentMethod}
           amountPaid={amountPaid}
           setAmountPaid={setAmountPaid}
+          paymentRef={paymentRef}
+          setPaymentRef={setPaymentRef}
+          alreadyPaid={linkedOrder ? Math.min(Number(linkedOrder.advance_amount) || 0, totals.grandTotal) : 0}
           changeDue={changeDue}
           balanceDue={balanceDue}
           reference={reference}
@@ -1085,12 +1105,9 @@ function Row({
    CUSTOMER CARD
 ============================================================ */
 function CustomerCard({ customer }: { customer: Customer }) {
-  const balanceLabel =
-    customer.balance_type === "debit" ? "Due (Dr)" : "Advance (Cr)";
-  const balanceColor =
-    customer.balance_type === "debit" && customer.current_balance > 0
-      ? "text-red-600"
-      : "text-[#0fa846]";
+  const bal = Number(customer.current_balance) || 0;
+  const balanceLabel = bal > 0 ? "Balance due" : bal < 0 ? "Advance (credit)" : "Khata clear";
+  const balanceColor = bal > 0 ? "text-red-600" : "text-[#0fa846]";
 
   return (
     <div className="rounded-md border border-[#17D65D]/30 bg-[#17D65D]/5 p-3">
@@ -1411,12 +1428,11 @@ function CustomerSearch({
                     </div>
                     <div className="shrink-0 text-right">
                       <div className="text-[10px] uppercase tracking-wide text-gray-400">
-                        {c.balance_type === "debit" ? "Due" : "Advance"}
+                        {Number(c.current_balance) > 0 ? "Due" : Number(c.current_balance) < 0 ? "Advance" : "Clear"}
                       </div>
                       <div
                         className={`text-xs font-semibold ${
-                          c.balance_type === "debit" &&
-                          c.current_balance > 0
+                          Number(c.current_balance) > 0
                             ? "text-red-600"
                             : "text-gray-700"
                         }`}
@@ -1712,6 +1728,9 @@ function CheckoutModal({
   setPaymentMethod,
   amountPaid,
   setAmountPaid,
+  paymentRef,
+  setPaymentRef,
+  alreadyPaid,
   changeDue,
   balanceDue,
   reference,
@@ -1738,6 +1757,9 @@ function CheckoutModal({
   setPaymentMethod: (v: string) => void;
   amountPaid: string;
   setAmountPaid: (v: string) => void;
+  paymentRef: string;
+  setPaymentRef: (v: string) => void;
+  alreadyPaid: number;
   changeDue: number;
   balanceDue: number;
   reference: string;
@@ -1821,19 +1843,29 @@ function CheckoutModal({
             <label className="mb-1.5 block text-xs font-medium text-gray-700">
               Payment method
             </label>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {alreadyPaid > 0 && (
+              <div className="mb-2 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-800">
+                Already received with the order: <b>{formatCurrency(alreadyPaid)}</b>
+                {alreadyPaid < totals.grandTotal
+                  ? ` — enter the total received (incl. this) if the customer paid the rest.`
+                  : " — fully paid."}
+              </div>
+            )}
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
               {[
+                { id: "bank_transfer", label: "Bank Transfer", icon: "🏦" },
                 { id: "cash", label: "Cash", icon: "💵" },
-                { id: "card", label: "Card", icon: "💳" },
-                { id: "bank", label: "Bank", icon: "🏦" },
-                { id: "credit", label: "On Credit", icon: "🧾" },
+                { id: "wallet", label: "JazzCash / Easypaisa", icon: "📱" },
+                { id: "card", label: "Card (POS)", icon: "💳" },
+                { id: "credit", label: "Credit (khata)", icon: "🧾" },
               ].map((pm) => (
                 <button
                   key={pm.id}
                   type="button"
                   onClick={() => {
                     setPaymentMethod(pm.id);
-                    if (pm.id === "credit") setAmountPaid("0");
+                    if (pm.id === "credit") setAmountPaid(String(alreadyPaid));
+                    else if (paymentMethod === "credit") setAmountPaid(String(totals.grandTotal));
                   }}
                   className={`flex flex-col items-center gap-1 rounded-md border px-2 py-2.5 text-xs font-medium transition ${
                     paymentMethod === pm.id
@@ -1842,17 +1874,24 @@ function CheckoutModal({
                   }`}
                 >
                   <span className="text-base">{pm.icon}</span>
-                  {pm.label}
+                  <span className="text-center leading-tight">{pm.label}</span>
                 </button>
               ))}
             </div>
           </div>
 
+          {paymentMethod === "credit" && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              Nothing received now — {formatCurrency(Math.max(0, totals.grandTotal - alreadyPaid))} will be added to the
+              customer&apos;s khata as balance due.
+            </div>
+          )}
+
           {/* AMOUNT PAID */}
           {paymentMethod !== "credit" && (
             <div>
               <label className="mb-1.5 block text-xs font-medium text-gray-700">
-                Amount paid
+                Amount received
               </label>
               <input
                 type="number"
@@ -1863,7 +1902,7 @@ function CheckoutModal({
                 className={`${inputCls} text-lg font-semibold`}
               />
               <div className="mt-2 flex flex-wrap gap-1.5">
-                {quickAmounts.map((amt) => (
+                {(paymentMethod === "cash" ? quickAmounts : [totals.grandTotal]).map((amt) => (
                   <button
                     key={amt}
                     type="button"
@@ -1876,13 +1915,13 @@ function CheckoutModal({
               </div>
               <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
                 <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
-                  <div className="text-gray-500">Change due</div>
+                  <div className="text-gray-500">{paymentMethod === "cash" ? "Change to return" : "Extra received"}</div>
                   <div className="mt-0.5 text-sm font-semibold text-[#0fa846]">
                     {formatCurrency(changeDue)}
                   </div>
                 </div>
                 <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
-                  <div className="text-gray-500">Balance due</div>
+                  <div className="text-gray-500">Credit (balance due)</div>
                   <div
                     className={`mt-0.5 text-sm font-semibold ${
                       balanceDue > 0 ? "text-red-600" : "text-gray-700"
@@ -1892,6 +1931,21 @@ function CheckoutModal({
                   </div>
                 </div>
               </div>
+            </div>
+          )}
+
+          {paymentMethod !== "credit" && paymentMethod !== "cash" && (
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                Transaction ID / last 4 digits
+              </label>
+              <input
+                type="text"
+                value={paymentRef}
+                onChange={(e) => setPaymentRef(e.target.value)}
+                placeholder={paymentMethod === "bank_transfer" ? "e.g. IBFT ref or sender name" : "Optional"}
+                className={inputCls}
+              />
             </div>
           )}
 

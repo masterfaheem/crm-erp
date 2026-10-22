@@ -1,19 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
+import { nextDocNumber } from "@/lib/ledger";
 
 /* ============================================================
    Helper: generate PO number  (PO-YYYY-NNNN)
 ============================================================ */
 async function nextPoNumber(companyId: number): Promise<string> {
-  const year = new Date().getFullYear();
-  const [row] = await query<Array<{ c: number }>>(
-    `SELECT COUNT(*) AS c FROM purchase_orders
-      WHERE company_id = ? AND YEAR(created_at) = ?`,
-    [companyId, year]
-  );
-  const seq = (row?.c ?? 0) + 1;
-  return `PO-${year}-${String(seq).padStart(4, "0")}`;
+  return nextDocNumber("purchase_orders", "po_number", "PO", companyId);
 }
 
 /* ============================================================

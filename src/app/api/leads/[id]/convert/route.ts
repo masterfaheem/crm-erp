@@ -12,6 +12,7 @@ import {
   nextSalesOrderNumber,
 } from "@/lib/orderHandover";
 import { professionText, formatUseCases } from "@/lib/leadOptions";
+import { addCustomerPayment, recalcCustomer } from "@/lib/ledger";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -118,12 +119,12 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   );
   const advance = Math.max(0, Number(body.advance_amount) || 0);
   if (advance > total) {
-    return NextResponse.json({ error: "Advance cannot be more than the total" }, { status: 400 });
+    return NextResponse.json({ error: "Payment cannot be more than the total" }, { status: 400 });
   }
   const methods = PAYMENT_METHODS.map((m) => m.value);
   const advMethod = advance > 0 ? cleanStr(body.advance_method, 30) : "none";
   if (advance > 0 && (!advMethod || !methods.includes(advMethod) || advMethod === "none")) {
-    return NextResponse.json({ error: "Select how the advance was received" }, { status: 400 });
+    return NextResponse.json({ error: "Select how the payment was received" }, { status: 400 });
   }
   const specs = cleanStr(body.specs_note, 1000);
   const dispatchDate = cleanDate(body.dispatch_date);
@@ -237,7 +238,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
       `Deliver to: ${d.delivery_name}, ${d.delivery_phone}${d.delivery_phone2 ? " / " + d.delivery_phone2 : ""}`,
       `Address: ${address}`,
       specs ? `Specs: ${specs}` : null,
-      `Advance: Rs ${advance.toLocaleString("en-PK")}${advance > 0 ? ` (${advMethod}${body.advance_reference ? ", ref " + String(body.advance_reference).slice(0, 100) : ""})` : ""} · COD: Rs ${cod.toLocaleString("en-PK")}`,
+      `Paid: Rs ${advance.toLocaleString("en-PK")}${advance > 0 ? ` (${advMethod}${body.advance_reference ? ", ref " + String(body.advance_reference).slice(0, 100) : ""})` : ""}${cod > 0 ? ` · Balance due: Rs ${cod.toLocaleString("en-PK")}` : " · Fully paid"}`,
       dispatchNotes ? `Note: ${dispatchNotes}` : null,
     ]
       .filter(Boolean)
@@ -281,6 +282,21 @@ export async function POST(req: NextRequest, { params }: Ctx) {
       ]
     );
 
+    /* ---------- payment received -> customer payment (khata) ---------- */
+    const handoverId = (hRes as { insertId: number }).insertId;
+    if (advance > 0) {
+      const pid = await addCustomerPayment(conn, user, {
+        customer_id: customer.id,
+        invoice_id: null,
+        amount: advance,
+        method: advMethod || "bank_transfer",
+        reference: cleanStr(body.advance_reference, 100),
+        notes: `Payment for ${orderNumber}`,
+      });
+      await conn.query(`UPDATE ${HANDOVER_TABLE} SET payment_id = ? WHERE id = ?`, [pid, handoverId]);
+    }
+    await recalcCustomer(conn, user.company_id, customer.id);
+
     /* ---------- lead -> won, keep delivery address on the lead ---------- */
     await conn.query(
       `UPDATE ${LEADS_TABLE}
@@ -298,7 +314,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     return NextResponse.json(
       {
         data: {
-          handover_id: (hRes as { insertId: number }).insertId,
+          handover_id: handoverId,
           sales_order_id: salesOrderId,
           order_number: orderNumber,
           customer_id: customer.id,

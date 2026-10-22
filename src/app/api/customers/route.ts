@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
+import { ensureLedgerReady } from "@/lib/ledgerSetup";
 import { verifySession, SESSION_COOKIE_NAME } from "@/lib/auth";
 import { findCustomerByPhones } from "@/lib/orderHandover";
 
@@ -95,6 +96,7 @@ export async function GET(req: NextRequest) {
     if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+  await ensureLedgerReady().catch((e) => console.error("ledger setup", e));
 
     const { searchParams } = new URL(req.url);
     const search = searchParams.get("search")?.trim() || "";
@@ -378,7 +380,7 @@ export async function POST(req: NextRequest) {
         Number(body.credit_days ?? 0),
         Number(body.opening_balance ?? 0),
         body.balance_type || "debit",
-        Number(body.opening_balance ?? 0),
+        Number(body.opening_balance ?? 0) * (body.balance_type === "credit" ? -1 : 1),
         body.currency_code || "PKR",
         body.tax_exempt ? true : false,
         Number(body.default_tax_rate ?? 0),

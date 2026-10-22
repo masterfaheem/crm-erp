@@ -36,6 +36,8 @@ export interface Order {
   advance_method: string | null;
   advance_reference: string | null;
   cod_amount: number;
+  paid_total?: number | null;
+  balance_due?: number | null;
   specs_note: string | null;
   delivery_name: string;
   delivery_phone: string;
@@ -100,8 +102,9 @@ const METHOD_LABEL: Record<string, string> = {
   bank_transfer: "Bank Transfer",
   jazzcash: "JazzCash",
   easypaisa: "Easypaisa",
+  wallet: "JazzCash / Easypaisa",
   cash: "Cash",
-  card: "Card",
+  card: "Card (POS)",
   none: "—",
 };
 const COURIERS = ["TCS", "Leopards", "M&P", "Trax", "PostEx", "Call Courier", "BlueEx", "Rider (own)", "Other"];
@@ -116,6 +119,13 @@ function addressOf(o: Order) {
 function itemName(it: OrderItem) {
   return it.product_name || it.description || "Item";
 }
+/* prepaid business: what's received so far and what's still due (live from the bill once billed) */
+function paidOf(o: Order) {
+  return Number(o.paid_total ?? o.advance_amount) || 0;
+}
+function dueOf(o: Order) {
+  return Math.max(0, Number(o.balance_due ?? o.cod_amount) || 0);
+}
 function courierText(o: Order) {
   return [
     `Order: ${o.order_number}`,
@@ -123,7 +133,7 @@ function courierText(o: Order) {
     `Phone: ${o.delivery_phone}${o.delivery_phone2 ? " / " + o.delivery_phone2 : ""}`,
     `Address: ${addressOf(o)}`,
     `Item: ${o.items.map((it) => `${itemName(it)} x${Number(it.quantity)}`).join(", ")}`,
-    `COD: ${rs(o.cod_amount)}`,
+    dueOf(o) > 0 ? `Collect: ${rs(dueOf(o))}` : `Payment: PAID (do not collect)`,
   ].join("\n");
 }
 
@@ -235,7 +245,7 @@ export function OrderBoard({
       <div>${esc(addressOf(o))}</div></div>
       <table>${o.items.map((it) => `<tr><td>${esc(itemName(it))}</td><td align="right">x${Number(it.quantity)}</td></tr>`).join("")}</table>
       ${o.specs_note ? `<p>Specs: ${esc(o.specs_note)}</p>` : ""}
-      <div class="box big">COD: ${esc(rs(o.cod_amount))}</div>
+      <div class="box big">${dueOf(o) > 0 ? `Collect: ${esc(rs(dueOf(o)))}` : "PAID — nothing to collect"}</div>
       ${o.courier ? `<p>Courier: ${esc(o.courier)} ${esc(o.tracking_no || "")}</p>` : ""}
       <script>window.onload=()=>window.print()</script></body></html>`);
     w.document.close();
@@ -345,8 +355,8 @@ export function OrderBoard({
                         <p className="text-sm font-bold">{rs(o.total_amount)}</p>
                       </div>
                       <div className="rounded-lg bg-green-50 py-1.5">
-                        <p className="text-[10px] font-semibold uppercase text-gray-500">Advance</p>
-                        <p className="text-sm font-bold text-green-700">{rs(o.advance_amount)}</p>
+                        <p className="text-[10px] font-semibold uppercase text-gray-500">Paid</p>
+                        <p className="text-sm font-bold text-green-700">{rs(paidOf(o))}</p>
                         {Number(o.advance_amount) > 0 && (
                           <p className="text-[10px] text-gray-500">
                             {METHOD_LABEL[o.advance_method || ""] || o.advance_method}
@@ -354,10 +364,17 @@ export function OrderBoard({
                           </p>
                         )}
                       </div>
-                      <div className="rounded-lg bg-red-50 py-1.5">
-                        <p className="text-[10px] font-semibold uppercase text-gray-500">COD</p>
-                        <p className="text-sm font-bold text-red-600">{rs(o.cod_amount)}</p>
-                      </div>
+                      {dueOf(o) > 0 ? (
+                        <div className="rounded-lg bg-red-50 py-1.5">
+                          <p className="text-[10px] font-semibold uppercase text-gray-500">Balance due</p>
+                          <p className="text-sm font-bold text-red-600">{rs(dueOf(o))}</p>
+                        </div>
+                      ) : (
+                        <div className="rounded-lg bg-green-50 py-1.5">
+                          <p className="text-[10px] font-semibold uppercase text-gray-500">Status</p>
+                          <p className="text-sm font-bold text-green-700">✓ Fully paid</p>
+                        </div>
+                      )}
                     </div>
 
                     {/* address */}
@@ -512,7 +529,16 @@ export function OrderBoard({
                         <input value={tracking} onChange={(e) => setTracking(e.target.value)} placeholder="Tracking / CN number" className="flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm" />
                         <button
                           disabled={busy === o.id}
-                          onClick={() => update(o, { status: "shipped", courier, tracking_no: tracking })}
+                          onClick={() => {
+                            if (
+                              dueOf(o) > 0 &&
+                              !window.confirm(
+                                `${o.order_number} still has ${rs(dueOf(o))} due. Dispatch on credit anyway?`
+                              )
+                            )
+                              return;
+                            update(o, { status: "shipped", courier, tracking_no: tracking });
+                          }}
                           className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50"
                         >
                           Save
