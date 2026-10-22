@@ -7,7 +7,9 @@ import {
   LEAD_SOURCES,
   LEAD_SOURCE_GROUPS,
   PAKISTAN_CITIES,
+  leadSourceLabel,
 } from "@/lib/leadOptions";
+import { ExportMenu, ImportLeadsModal } from "./LeadsImportExport";
 
 /* ============================================================
    TYPES
@@ -95,6 +97,61 @@ const PRIORITY_OPTIONS = [
   { value: "urgent", label: "Urgent" },
 ];
 
+/* ---------- Advanced filters ---------- */
+const EMPTY_FILTERS = {
+  status: "",
+  priority: "",
+  lead_number: "",
+  name: "",
+  phone: "",
+  email: "",
+  company: "",
+  designation: "",
+  city: "",
+  source: "",
+  assigned_to: "",
+  value_min: "",
+  value_max: "",
+  close_from: "",
+  close_to: "",
+  created_from: "",
+  created_to: "",
+  address: "",
+  notes: "",
+};
+type Filters = typeof EMPTY_FILTERS;
+
+const FILTER_LABELS: Record<keyof Filters, string> = {
+  status: "Status",
+  priority: "Priority",
+  lead_number: "Lead #",
+  name: "Name",
+  phone: "Phone",
+  email: "Email",
+  company: "Company",
+  designation: "Designation",
+  city: "City",
+  source: "Source",
+  assigned_to: "Assigned",
+  value_min: "Value ≥",
+  value_max: "Value ≤",
+  close_from: "Close from",
+  close_to: "Close to",
+  created_from: "Created from",
+  created_to: "Created to",
+  address: "Address",
+  notes: "Notes",
+};
+
+function buildQuery(search: string, f: Filters): string {
+  const qs = new URLSearchParams();
+  if (search.trim()) qs.set("search", search.trim());
+  (Object.keys(f) as (keyof Filters)[]).forEach((k) => {
+    if (f[k].trim()) qs.set(k, f[k].trim());
+  });
+  return qs.toString();
+}
+
 const inputCls =
   "w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-[#17D65D] focus:bg-white focus:ring-2 focus:ring-[#17D65D]/20";
 
@@ -113,11 +170,13 @@ export default function LeadsPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
-  const [priorityFilter, setPriorityFilter] = useState("");
+  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
+  const [draft, setDraft] = useState<Filters>(EMPTY_FILTERS);
+  const [showFilters, setShowFilters] = useState(false);
   const [page, setPage] = useState(1);
 
   const [showCreate, setShowCreate] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [users, setUsers] = useState<UserOption[]>([]);
 
   const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -148,10 +207,7 @@ export default function LeadsPage() {
     setLoading(true);
     setError(null);
     try {
-      const qs = new URLSearchParams();
-      if (search) qs.set("search", search);
-      if (statusFilter) qs.set("status", statusFilter);
-      if (priorityFilter) qs.set("priority", priorityFilter);
+      const qs = new URLSearchParams(buildQuery(search, filters));
       qs.set("page", String(page));
       qs.set("limit", "20");
 
@@ -174,16 +230,36 @@ export default function LeadsPage() {
     } finally {
       setLoading(false);
     }
-  }, [search, statusFilter, priorityFilter, page]);
+  }, [search, filters, page]);
 
   useEffect(() => {
     fetchLeads();
   }, [fetchLeads]);
 
-  /* ---------- Reset page on filter change ---------- */
-  useEffect(() => {
+  /* ---------- Filter helpers ---------- */
+  const applyFilters = (next: Filters) => {
+    setFilters(next);
+    setDraft(next);
     setPage(1);
-  }, [statusFilter, priorityFilter]);
+  };
+  const setQuick = (k: keyof Filters, v: string) =>
+    applyFilters({ ...filters, [k]: v });
+  const activeFilters = (Object.keys(filters) as (keyof Filters)[]).filter(
+    (k) => filters[k].trim() !== ""
+  );
+  const exportQuery = buildQuery(search, filters);
+  const filterDisplay = (k: keyof Filters, v: string) => {
+    if (k === "source") return leadSourceLabel(v);
+    if (k === "status")
+      return STATUS_OPTIONS.find((o) => o.value === v)?.label || v;
+    if (k === "priority")
+      return PRIORITY_OPTIONS.find((o) => o.value === v)?.label || v;
+    if (k === "assigned_to")
+      return v === "unassigned"
+        ? "Unassigned"
+        : users.find((u) => String(u.id) === v)?.name || v;
+    return v;
+  };
 
   /* ---------- Debounced search ---------- */
   const handleSearchChange = (v: string) => {
@@ -229,6 +305,17 @@ export default function LeadsPage() {
                   Manage and track your sales leads
                 </p>
               </div>
+              <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => setShowImport(true)}
+                className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 shadow-sm transition hover:bg-gray-50"
+              >
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M17 8l-5-5-5 5M12 3v12" />
+                </svg>
+                Import
+              </button>
+              <ExportMenu query={exportQuery} />
               <button
                 onClick={() => setShowCreate(true)}
                 className="inline-flex items-center gap-2 rounded-lg bg-[#17D65D] px-4 py-2 text-sm font-semibold text-black shadow-sm transition hover:bg-[#15c455] active:scale-[0.98]"
@@ -248,6 +335,7 @@ export default function LeadsPage() {
                 </svg>
                 New Lead
               </button>
+              </div>
             </div>
 
             {/* STATS */}
@@ -301,8 +389,8 @@ export default function LeadsPage() {
                 </div>
 
                 <select
-                  value={statusFilter}
-                  onChange={(e) => setStatusFilter(e.target.value)}
+                  value={filters.status}
+                  onChange={(e) => setQuick("status", e.target.value)}
                   className={inputCls}
                 >
                   {STATUS_OPTIONS.map((o) => (
@@ -313,8 +401,8 @@ export default function LeadsPage() {
                 </select>
 
                 <select
-                  value={priorityFilter}
-                  onChange={(e) => setPriorityFilter(e.target.value)}
+                  value={filters.priority}
+                  onChange={(e) => setQuick("priority", e.target.value)}
                   className={inputCls}
                 >
                   {PRIORITY_OPTIONS.map((o) => (
@@ -324,18 +412,158 @@ export default function LeadsPage() {
                   ))}
                 </select>
 
-                <button
-                  onClick={() => {
-                    setSearch("");
-                    setStatusFilter("");
-                    setPriorityFilter("");
-                    setPage(1);
-                  }}
-                  className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
-                >
-                  Reset Filters
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setShowFilters((v) => !v)}
+                    className={`flex-1 inline-flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold transition ${
+                      showFilters
+                        ? "border-[#17D65D] bg-[#17D65D]/10 text-gray-900"
+                        : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50"
+                    }`}
+                  >
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4h18l-7 8v6l-4 2v-8L3 4z" />
+                    </svg>
+                    Filters
+                    {activeFilters.length > 0 && (
+                      <span className="rounded-full bg-[#17D65D] px-1.5 text-[11px] font-bold text-black">
+                        {activeFilters.length}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setSearch("");
+                      applyFilters(EMPTY_FILTERS);
+                    }}
+                    className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
+                  >
+                    Reset
+                  </button>
+                </div>
               </div>
+
+              {/* ADVANCED FILTERS */}
+              {showFilters && (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    applyFilters(draft);
+                  }}
+                  className="mt-4 border-t border-gray-100 pt-4"
+                >
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <Field label="Name">
+                      <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="First or last name" className={inputCls} />
+                    </Field>
+                    <Field label="Phone / WhatsApp">
+                      <input value={draft.phone} onChange={(e) => setDraft({ ...draft, phone: e.target.value })} placeholder="0300..." className={inputCls} />
+                    </Field>
+                    <Field label="Email">
+                      <input value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} className={inputCls} />
+                    </Field>
+                    <Field label="Lead #">
+                      <input value={draft.lead_number} onChange={(e) => setDraft({ ...draft, lead_number: e.target.value })} placeholder="LEAD-0001" className={inputCls} />
+                    </Field>
+                    <Field label="City">
+                      <CitySelect value={draft.city} onChange={(v) => setDraft({ ...draft, city: v })} placeholder="Any city" />
+                    </Field>
+                    <Field label="Source">
+                      <select value={draft.source} onChange={(e) => setDraft({ ...draft, source: e.target.value })} className={inputCls}>
+                        <option value="">Any source</option>
+                        {LEAD_SOURCE_GROUPS.map((g) => (
+                          <optgroup key={g} label={g}>
+                            {LEAD_SOURCES.filter((x) => x.group === g).map((x) => (
+                              <option key={x.value} value={x.value}>{x.label}</option>
+                            ))}
+                          </optgroup>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="Assigned To">
+                      <select value={draft.assigned_to} onChange={(e) => setDraft({ ...draft, assigned_to: e.target.value })} className={inputCls}>
+                        <option value="">Anyone</option>
+                        <option value="unassigned">Unassigned</option>
+                        {users.map((u) => (
+                          <option key={u.id} value={u.id}>{u.name}</option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="Company">
+                      <input value={draft.company} onChange={(e) => setDraft({ ...draft, company: e.target.value })} className={inputCls} />
+                    </Field>
+                    <Field label="Designation">
+                      <input value={draft.designation} onChange={(e) => setDraft({ ...draft, designation: e.target.value })} className={inputCls} />
+                    </Field>
+                    <Field label="Estimated Value (Rs)">
+                      <div className="flex gap-2">
+                        <input type="number" min="0" value={draft.value_min} onChange={(e) => setDraft({ ...draft, value_min: e.target.value })} placeholder="Min" className={inputCls} />
+                        <input type="number" min="0" value={draft.value_max} onChange={(e) => setDraft({ ...draft, value_max: e.target.value })} placeholder="Max" className={inputCls} />
+                      </div>
+                    </Field>
+                    <div className="lg:col-span-2">
+                    <Field label="Expected Close">
+                      <div className="flex gap-2">
+                        <input type="date" value={draft.close_from} onChange={(e) => setDraft({ ...draft, close_from: e.target.value })} className={inputCls} />
+                        <input type="date" value={draft.close_to} onChange={(e) => setDraft({ ...draft, close_to: e.target.value })} className={inputCls} />
+                      </div>
+                    </Field>
+                    </div>
+                    <div className="lg:col-span-2">
+                    <Field label="Created Date">
+                      <div className="flex gap-2">
+                        <input type="date" value={draft.created_from} onChange={(e) => setDraft({ ...draft, created_from: e.target.value })} className={inputCls} />
+                        <input type="date" value={draft.created_to} onChange={(e) => setDraft({ ...draft, created_to: e.target.value })} className={inputCls} />
+                      </div>
+                    </Field>
+                    </div>
+                    <Field label="Address">
+                      <input value={draft.address} onChange={(e) => setDraft({ ...draft, address: e.target.value })} className={inputCls} />
+                    </Field>
+                    <Field label="Notes">
+                      <input value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} className={inputCls} />
+                    </Field>
+                  </div>
+                  <div className="mt-4 flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => applyFilters({ ...EMPTY_FILTERS, status: filters.status, priority: filters.priority })}
+                      className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+                    >
+                      Clear
+                    </button>
+                    <button
+                      type="submit"
+                      className="rounded-lg bg-[#17D65D] px-4 py-2 text-sm font-semibold text-black hover:bg-[#15c455]"
+                    >
+                      Apply Filters
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {/* ACTIVE FILTER CHIPS */}
+              {activeFilters.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {activeFilters.map((k) => (
+                    <span
+                      key={k}
+                      className="inline-flex items-center gap-1 rounded-full bg-[#17D65D]/10 px-2.5 py-1 text-xs text-gray-800"
+                    >
+                      <span className="font-semibold">{FILTER_LABELS[k]}:</span>
+                      {filterDisplay(k, filters[k])}
+                      <button
+                        type="button"
+                        onClick={() => applyFilters({ ...filters, [k]: "" })}
+                        className="ml-0.5 text-gray-500 hover:text-gray-900"
+                        aria-label={`Remove ${FILTER_LABELS[k]} filter`}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* TABLE */}
@@ -382,7 +610,7 @@ export default function LeadsPage() {
                     No leads found
                   </h3>
                   <p className="mt-1 text-sm text-gray-500">
-                    {search || statusFilter || priorityFilter
+                    {search || activeFilters.length
                       ? "Try adjusting your filters."
                       : "Get started by creating your first lead."}
                   </p>
@@ -630,6 +858,14 @@ export default function LeadsPage() {
           </div>
         </div>
       </main>
+
+      {/* IMPORT MODAL */}
+      {showImport && (
+        <ImportLeadsModal
+          onClose={() => setShowImport(false)}
+          onImported={fetchLeads}
+        />
+      )}
 
       {/* CREATE MODAL */}
       {showCreate && (
@@ -1022,9 +1258,11 @@ function CreateLeadModal({
 function CitySelect({
   value,
   onChange,
+  placeholder = "Select city",
 }: {
   value: string;
   onChange: (v: string) => void;
+  placeholder?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -1069,7 +1307,7 @@ function CitySelect({
         className={`${inputCls} flex items-center justify-between text-left`}
       >
         <span className={value ? "text-gray-900" : "text-gray-500"}>
-          {value || "Select city"}
+          {value || placeholder}
         </span>
         <svg className="h-4 w-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
