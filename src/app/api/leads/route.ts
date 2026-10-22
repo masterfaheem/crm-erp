@@ -3,17 +3,13 @@ import { getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
 import {
   LEADS_TABLE,
-  LEAD_PRIORITIES,
   LEAD_SELECT,
-  LEAD_SOURCE_VALUES,
-  LEAD_STATUSES,
   buildLeadFilters,
-  cleanDate,
-  cleanStr,
   ensureLeadsTable,
   formatLeadNumber,
   mapLeadRow,
   nextLeadNumberBase,
+  parseLeadInput,
 } from "@/lib/leadsTable";
 
 /* ============================================================
@@ -35,6 +31,13 @@ export async function GET(req: NextRequest) {
     const offset = (page - 1) * limit;
 
     const { whereSql, params } = buildLeadFilters(sp, user.company_id);
+    const fu = sp.get("follow_up") || "";
+    const orderSql =
+      fu === "done"
+        ? "l.follow_up_at DESC"
+        : fu
+        ? "l.follow_up_at ASC"
+        : "l.id DESC";
     const pool = getPool();
 
     const [countRows] = await pool.query(
@@ -44,7 +47,7 @@ export async function GET(req: NextRequest) {
     const total = Number((countRows as { total: number }[])[0]?.total || 0);
 
     const [rows] = await pool.query(
-      `${LEAD_SELECT} WHERE ${whereSql} ORDER BY l.id DESC LIMIT ? OFFSET ?`,
+      `${LEAD_SELECT} WHERE ${whereSql} ORDER BY ${orderSql} LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
 
@@ -73,26 +76,10 @@ export async function POST(req: NextRequest) {
     await ensureLeadsTable();
 
     const body = await req.json().catch(() => ({}));
-
-    const firstName = cleanStr(body.first_name, 120);
-    if (!firstName) {
-      return NextResponse.json(
-        { error: "First name is required" },
-        { status: 400 }
-      );
+    const { values, error } = parseLeadInput(body, false);
+    if (error) {
+      return NextResponse.json({ error }, { status: 400 });
     }
-
-    const source = cleanStr(body.source, 50);
-    if (source && !LEAD_SOURCE_VALUES.includes(source)) {
-      return NextResponse.json({ error: "Invalid source" }, { status: 400 });
-    }
-
-    const status = LEAD_STATUSES.includes(body.status) ? body.status : "new";
-    const priority = LEAD_PRIORITIES.includes(body.priority)
-      ? body.priority
-      : "medium";
-    const assignedTo = body.assigned_to ? Number(body.assigned_to) || null : null;
-    const estimated = Number(body.estimated_value) || 0;
 
     const pool = getPool();
     const conn = await pool.getConnection();
@@ -101,38 +88,19 @@ export async function POST(req: NextRequest) {
 
       // Next lead number: LEAD-0001, LEAD-0002, ...
       const next = (await nextLeadNumberBase(conn, user.company_id)) + 1;
-      const leadNumber = formatLeadNumber(next);
-
+      const row: Record<string, unknown> = {
+        company_id: user.company_id,
+        branch_id: user.branch_id ?? null,
+        lead_number: formatLeadNumber(next),
+        created_by: user.id,
+        ...values,
+      };
+      const cols = Object.keys(row);
       const [result] = await conn.query(
-        `INSERT INTO ${LEADS_TABLE}
-          (company_id, branch_id, lead_number, first_name, last_name,
-           company_name, designation, email, phone, alternate_phone, whatsapp,
-           source, city, assigned_to, status, priority, estimated_value,
-           expected_close_date, address, description, created_by)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        [
-          user.company_id,
-          user.branch_id ?? null,
-          leadNumber,
-          firstName,
-          cleanStr(body.last_name, 120),
-          cleanStr(body.company_name, 200),
-          cleanStr(body.designation, 120),
-          cleanStr(body.email, 190),
-          cleanStr(body.phone, 40),
-          cleanStr(body.alternate_phone, 40),
-          cleanStr(body.whatsapp, 40),
-          source,
-          cleanStr(body.city, 100),
-          assignedTo,
-          status,
-          priority,
-          estimated,
-          cleanDate(body.expected_close_date),
-          cleanStr(body.address, 5000),
-          cleanStr(body.description, 10000),
-          user.id,
-        ]
+        `INSERT INTO ${LEADS_TABLE} (${cols.join(", ")}) VALUES (${cols
+          .map(() => "?")
+          .join(", ")})`,
+        cols.map((c) => row[c])
       );
       await conn.commit();
 
