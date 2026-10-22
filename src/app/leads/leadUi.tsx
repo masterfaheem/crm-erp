@@ -14,13 +14,12 @@ export const STATUS_STYLES: Record<
   { bg: string; text: string; label: string; dot: string }
 > = {
   new: { bg: "bg-blue-50", text: "text-blue-700", dot: "bg-blue-500", label: "New" },
-  contacted: { bg: "bg-indigo-50", text: "text-indigo-700", dot: "bg-indigo-500", label: "Contacted" },
-  qualified: { bg: "bg-cyan-50", text: "text-cyan-700", dot: "bg-cyan-500", label: "Qualified" },
+  mature: { bg: "bg-cyan-50", text: "text-cyan-700", dot: "bg-cyan-500", label: "Mature" },
   proposal: { bg: "bg-amber-50", text: "text-amber-700", dot: "bg-amber-500", label: "Proposal" },
   negotiation: { bg: "bg-purple-50", text: "text-purple-700", dot: "bg-purple-500", label: "Negotiation" },
+  follow_up: { bg: "bg-indigo-50", text: "text-indigo-700", dot: "bg-indigo-500", label: "Follow Up" },
   won: { bg: "bg-green-50", text: "text-green-700", dot: "bg-green-500", label: "Won" },
   lost: { bg: "bg-red-50", text: "text-red-700", dot: "bg-red-500", label: "Lost" },
-  junk: { bg: "bg-gray-100", text: "text-gray-600", dot: "bg-gray-400", label: "Junk" },
 };
 
 export const PRIORITY_STYLES: Record<string, { bg: string; text: string; label: string }> = {
@@ -33,13 +32,12 @@ export const PRIORITY_STYLES: Record<string, { bg: string; text: string; label: 
 export const STATUS_OPTIONS = [
   { value: "", label: "All Statuses" },
   { value: "new", label: "New" },
-  { value: "contacted", label: "Contacted" },
-  { value: "qualified", label: "Qualified" },
+  { value: "mature", label: "Mature" },
   { value: "proposal", label: "Proposal" },
   { value: "negotiation", label: "Negotiation" },
+  { value: "follow_up", label: "Follow Up" },
   { value: "won", label: "Won" },
   { value: "lost", label: "Lost" },
-  { value: "junk", label: "Junk" },
 ];
 
 export const PRIORITY_OPTIONS = [
@@ -201,4 +199,23 @@ export function CitySelect({
       )}
     </div>
   );
+}
+
+/* "2026-10-25T14:30" -> "25 Oct, 2:30 PM" */
+export function fmtFollowUp(local?: string | null): string {
+  if (!local) return "";
+  const m = local.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  if (!m) return local;
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  let h = Number(m[4]);
+  const ampm = h >= 12 ? "PM" : "AM";
+  h = h % 12 || 12;
+  return `${Number(m[3])} ${months[Number(m[2]) - 1]} ${m[1]}, ${h}:${m[5]} ${ampm}`;
+}
+
+/* Is a follow-up (PKT wall-clock string) overdue right now? */
+export function isOverdue(local?: string | null): boolean {
+  if (!local) return false;
+  const nowPk = new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 16);
+  return local < nowPk;
 }

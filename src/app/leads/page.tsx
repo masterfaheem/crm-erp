@@ -1,14 +1,28 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Navbar from "@/app/components/Navbar";
 import {
+  BUDGET_LABELS,
+  BUDGET_RANGES,
   LEAD_SOURCES,
   LEAD_SOURCE_GROUPS,
+  LOST_REASONS,
+  PROFESSIONS,
+  USE_CASES,
   leadSourceLabel,
+  lostReasonText,
+  professionText,
 } from "@/lib/leadOptions";
 import { ExportMenu, ImportLeadsModal } from "./LeadsImportExport";
+import {
+  EMPTY_LEAD_FORM,
+  LeadFormFields,
+  formToPayload,
+  validateLeadForm,
+  type LeadFormState,
+} from "./LeadForm";
 import {
   CitySelect,
   Field,
@@ -16,8 +30,9 @@ import {
   PRIORITY_STYLES,
   STATUS_OPTIONS,
   STATUS_STYLES,
-  formatCurrency,
+  fmtFollowUp,
   inputCls,
+  isOverdue,
 } from "./leadUi";
 
 /* ============================================================
@@ -44,6 +59,14 @@ interface LeadRow {
   stage_name: string | null;
   pipeline_name: string | null;
   created_at: string;
+  city: string | null;
+  profession: string | null;
+  profession_other: string | null;
+  budget_range: string | null;
+  follow_up_local: string | null;
+  follow_up_done: number;
+  lost_reason: string | null;
+  lost_reason_other: string | null;
 }
 
 interface Pagination {
@@ -68,20 +91,21 @@ const EMPTY_FILTERS = {
   lead_number: "",
   name: "",
   phone: "",
-  email: "",
-  company: "",
-  designation: "",
   city: "",
   source: "",
+  profession: "",
+  budget_range: "",
+  use_case: "",
+  lost_reason: "",
+  follow_up: "",
+  follow_up_from: "",
+  follow_up_to: "",
   assigned_to: "",
-  value_min: "",
-  value_max: "",
-  close_from: "",
-  close_to: "",
   created_from: "",
   created_to: "",
-  address: "",
+  requirement: "",
   notes: "",
+  delivery: "",
 };
 type Filters = typeof EMPTY_FILTERS;
 
@@ -91,21 +115,34 @@ const FILTER_LABELS: Record<keyof Filters, string> = {
   lead_number: "Lead #",
   name: "Name",
   phone: "Phone",
-  email: "Email",
-  company: "Company",
-  designation: "Designation",
   city: "City",
   source: "Source",
+  profession: "Profession",
+  budget_range: "Budget",
+  use_case: "Use case",
+  lost_reason: "Lost reason",
+  follow_up: "Follow-up",
+  follow_up_from: "Follow-up from",
+  follow_up_to: "Follow-up to",
   assigned_to: "Assigned",
-  value_min: "Value ≥",
-  value_max: "Value ≤",
-  close_from: "Close from",
-  close_to: "Close to",
   created_from: "Created from",
   created_to: "Created to",
-  address: "Address",
+  requirement: "Requirement",
   notes: "Notes",
+  delivery: "Delivery address",
 };
+
+const FOLLOW_UP_SCOPES = [
+  { value: "due", label: "Due (today + overdue)" },
+  { value: "overdue", label: "Overdue" },
+  { value: "today", label: "Today" },
+  { value: "upcoming", label: "Upcoming" },
+  { value: "pending", label: "All pending" },
+  { value: "done", label: "Done" },
+];
+
+const optLabel = (arr: { value: string; label: string }[], v: string) =>
+  arr.find((o) => o.value === v)?.label || v;
 
 function buildQuery(search: string, f: Filters): string {
   const qs = new URLSearchParams();
@@ -138,6 +175,11 @@ export default function LeadsPage() {
 
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [fuSummary, setFuSummary] = useState<{
+    today: number;
+    overdue: number;
+    due: number;
+  } | null>(null);
   const [users, setUsers] = useState<UserOption[]>([]);
 
   const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -165,6 +207,11 @@ export default function LeadsPage() {
 
   /* ---------- Fetch leads ---------- */
   const fetchLeads = useCallback(async () => {
+    // follow-up counts (badge + stats), refreshed with the list
+    fetch("/api/leads/follow-ups", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => j && setFuSummary(j.data))
+      .catch(() => {});
     setLoading(true);
     setError(null);
     try {
@@ -215,6 +262,11 @@ export default function LeadsPage() {
       return STATUS_OPTIONS.find((o) => o.value === v)?.label || v;
     if (k === "priority")
       return PRIORITY_OPTIONS.find((o) => o.value === v)?.label || v;
+    if (k === "profession") return optLabel(PROFESSIONS, v);
+    if (k === "budget_range") return optLabel(BUDGET_RANGES, v);
+    if (k === "use_case") return optLabel(USE_CASES, v);
+    if (k === "lost_reason") return optLabel(LOST_REASONS, v);
+    if (k === "follow_up") return optLabel(FOLLOW_UP_SCOPES, v);
     if (k === "assigned_to")
       return v === "unassigned"
         ? "Unassigned"
@@ -245,10 +297,6 @@ export default function LeadsPage() {
     }
   };
 
-  const totalValue = useMemo(
-    () => leads.reduce((s, l) => s + Number(l.estimated_value || 0), 0),
-    [leads]
-  );
 
   return (
     <>
@@ -267,6 +315,17 @@ export default function LeadsPage() {
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
+              <Link
+                href="/leads/follow-ups"
+                className="relative inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 shadow-sm transition hover:bg-gray-50"
+              >
+                📅 Follow Ups
+                {!!fuSummary?.due && (
+                  <span className="rounded-full bg-red-500 px-1.5 text-[11px] font-bold text-white">
+                    {fuSummary.due}
+                  </span>
+                )}
+              </Link>
               <button
                 onClick={() => setShowImport(true)}
                 className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 shadow-sm transition hover:bg-gray-50"
@@ -299,6 +358,24 @@ export default function LeadsPage() {
               </div>
             </div>
 
+            {/* FOLLOW-UP REMINDER */}
+            {!!fuSummary?.due && (
+              <Link
+                href={fuSummary.overdue ? "/leads/follow-ups?tab=overdue" : "/leads/follow-ups"}
+                className="flex items-center justify-between rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 transition hover:bg-amber-100"
+              >
+                <span>
+                  🔔 <b>{fuSummary.due}</b> follow-up{fuSummary.due > 1 ? "s" : ""} due
+                  {fuSummary.overdue ? (
+                    <> — <b className="text-red-600">{fuSummary.overdue} overdue</b></>
+                  ) : (
+                    " today"
+                  )}
+                </span>
+                <span className="font-semibold">Open →</span>
+              </Link>
+            )}
+
             {/* STATS */}
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
               <StatCard
@@ -306,16 +383,20 @@ export default function LeadsPage() {
                 value={pagination.total.toLocaleString()}
                 accent="#3B82F6"
               />
-              <StatCard
-                label="On This Page"
-                value={leads.length.toString()}
-                accent="#17D65D"
-              />
-              <StatCard
-                label="Page Value"
-                value={formatCurrency(totalValue)}
-                accent="#F59E0B"
-              />
+              <Link href="/leads/follow-ups" className="block">
+                <StatCard
+                  label="Follow-ups Today"
+                  value={String(fuSummary?.today ?? 0)}
+                  accent="#6366F1"
+                />
+              </Link>
+              <Link href="/leads/follow-ups?tab=overdue" className="block">
+                <StatCard
+                  label="Overdue Follow-ups"
+                  value={String(fuSummary?.overdue ?? 0)}
+                  accent="#EF4444"
+                />
+              </Link>
               <StatCard
                 label="Page"
                 value={`${pagination.page} / ${pagination.total_pages || 1}`}
@@ -415,16 +496,10 @@ export default function LeadsPage() {
                 >
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                     <Field label="Name">
-                      <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="First or last name" className={inputCls} />
+                      <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Customer name" className={inputCls} />
                     </Field>
                     <Field label="Phone / WhatsApp">
                       <input value={draft.phone} onChange={(e) => setDraft({ ...draft, phone: e.target.value })} placeholder="0300..." className={inputCls} />
-                    </Field>
-                    <Field label="Email">
-                      <input value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} className={inputCls} />
-                    </Field>
-                    <Field label="Lead #">
-                      <input value={draft.lead_number} onChange={(e) => setDraft({ ...draft, lead_number: e.target.value })} placeholder="LEAD-0001" className={inputCls} />
                     </Field>
                     <Field label="City">
                       <CitySelect value={draft.city} onChange={(v) => setDraft({ ...draft, city: v })} placeholder="Any city" />
@@ -441,6 +516,54 @@ export default function LeadsPage() {
                         ))}
                       </select>
                     </Field>
+                    <Field label="Profession">
+                      <select value={draft.profession} onChange={(e) => setDraft({ ...draft, profession: e.target.value })} className={inputCls}>
+                        <option value="">Any profession</option>
+                        {PROFESSIONS.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="Budget Range">
+                      <select value={draft.budget_range} onChange={(e) => setDraft({ ...draft, budget_range: e.target.value })} className={inputCls}>
+                        <option value="">Any budget</option>
+                        {BUDGET_RANGES.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="Use Case">
+                      <select value={draft.use_case} onChange={(e) => setDraft({ ...draft, use_case: e.target.value })} className={inputCls}>
+                        <option value="">Any use case</option>
+                        {USE_CASES.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="Lost Reason">
+                      <select value={draft.lost_reason} onChange={(e) => setDraft({ ...draft, lost_reason: e.target.value })} className={inputCls}>
+                        <option value="">Any reason</option>
+                        {LOST_REASONS.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="Follow-up">
+                      <select value={draft.follow_up} onChange={(e) => setDraft({ ...draft, follow_up: e.target.value })} className={inputCls}>
+                        <option value="">Any</option>
+                        {FOLLOW_UP_SCOPES.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </Field>
+                    <div className="lg:col-span-2">
+                    <Field label="Follow-up Date">
+                      <div className="flex gap-2">
+                        <input type="date" value={draft.follow_up_from} onChange={(e) => setDraft({ ...draft, follow_up_from: e.target.value })} className={inputCls} />
+                        <input type="date" value={draft.follow_up_to} onChange={(e) => setDraft({ ...draft, follow_up_to: e.target.value })} className={inputCls} />
+                      </div>
+                    </Field>
+                    </div>
                     <Field label="Assigned To">
                       <select value={draft.assigned_to} onChange={(e) => setDraft({ ...draft, assigned_to: e.target.value })} className={inputCls}>
                         <option value="">Anyone</option>
@@ -450,26 +573,9 @@ export default function LeadsPage() {
                         ))}
                       </select>
                     </Field>
-                    <Field label="Company">
-                      <input value={draft.company} onChange={(e) => setDraft({ ...draft, company: e.target.value })} className={inputCls} />
+                    <Field label="Lead #">
+                      <input value={draft.lead_number} onChange={(e) => setDraft({ ...draft, lead_number: e.target.value })} placeholder="LEAD-0001" className={inputCls} />
                     </Field>
-                    <Field label="Designation">
-                      <input value={draft.designation} onChange={(e) => setDraft({ ...draft, designation: e.target.value })} className={inputCls} />
-                    </Field>
-                    <Field label="Estimated Value (Rs)">
-                      <div className="flex gap-2">
-                        <input type="number" min="0" value={draft.value_min} onChange={(e) => setDraft({ ...draft, value_min: e.target.value })} placeholder="Min" className={inputCls} />
-                        <input type="number" min="0" value={draft.value_max} onChange={(e) => setDraft({ ...draft, value_max: e.target.value })} placeholder="Max" className={inputCls} />
-                      </div>
-                    </Field>
-                    <div className="lg:col-span-2">
-                    <Field label="Expected Close">
-                      <div className="flex gap-2">
-                        <input type="date" value={draft.close_from} onChange={(e) => setDraft({ ...draft, close_from: e.target.value })} className={inputCls} />
-                        <input type="date" value={draft.close_to} onChange={(e) => setDraft({ ...draft, close_to: e.target.value })} className={inputCls} />
-                      </div>
-                    </Field>
-                    </div>
                     <div className="lg:col-span-2">
                     <Field label="Created Date">
                       <div className="flex gap-2">
@@ -478,11 +584,14 @@ export default function LeadsPage() {
                       </div>
                     </Field>
                     </div>
-                    <Field label="Address">
-                      <input value={draft.address} onChange={(e) => setDraft({ ...draft, address: e.target.value })} className={inputCls} />
+                    <Field label="Requirement Note">
+                      <input value={draft.requirement} onChange={(e) => setDraft({ ...draft, requirement: e.target.value })} placeholder="e.g. i7, 16GB" className={inputCls} />
                     </Field>
-                    <Field label="Notes">
-                      <input value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} className={inputCls} />
+                    <Field label="Description Note">
+                      <input value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} placeholder="" className={inputCls} />
+                    </Field>
+                    <Field label="Delivery Address">
+                      <input value={draft.delivery} onChange={(e) => setDraft({ ...draft, delivery: e.target.value })} placeholder="House, area, landmark..." className={inputCls} />
                     </Field>
                   </div>
                   <div className="mt-4 flex justify-end gap-2">
@@ -584,7 +693,7 @@ export default function LeadsPage() {
                 </div>
               ) : (
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[1000px]">
+                  <table className="w-full min-w-[1100px]">
                     <thead>
                       <tr className="border-b border-gray-100 bg-gray-50/50 text-left">
                         <th className="px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
@@ -600,16 +709,16 @@ export default function LeadsPage() {
                           Source
                         </th>
                         <th className="px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
-                          Assigned
-                        </th>
-                        <th className="px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
                           Status
                         </th>
                         <th className="px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
                           Priority
                         </th>
-                        <th className="px-5 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-500">
-                          Value
+                        <th className="px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                          Budget
+                        </th>
+                        <th className="px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                          Assigned
                         </th>
                         <th className="px-5 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-500">
                           Actions
@@ -632,7 +741,7 @@ export default function LeadsPage() {
                             <td className="px-5 py-3">
                               <Link
                                 href={`/leads/${lead.id}`}
-                                className="text-sm font-semibold text-gray-900 hover:text-[#17D65D]"
+                                className="whitespace-nowrap text-sm font-semibold text-gray-900 hover:text-[#17D65D]"
                               >
                                 {lead.lead_number}
                               </Link>
@@ -641,37 +750,48 @@ export default function LeadsPage() {
                               <p className="text-sm font-medium text-gray-900">
                                 {fullName}
                               </p>
-                              {lead.company_name && (
+                              {lead.profession && (
                                 <p className="text-[11px] text-gray-500">
-                                  {lead.company_name}
+                                  {professionText(lead.profession, lead.profession_other)}
                                 </p>
                               )}
                             </td>
                             <td className="px-5 py-3">
                               <p className="text-sm text-gray-700">
-                                {lead.phone || "-"}
+                                {lead.whatsapp || lead.phone || "-"}
                               </p>
-                              {lead.email && (
+                              {lead.city && (
                                 <p className="text-[11px] text-gray-500">
-                                  {lead.email}
+                                  {lead.city}
                                 </p>
                               )}
                             </td>
                             <td className="px-5 py-3 text-sm text-gray-600">
                               {lead.source_name || "-"}
                             </td>
-                            <td className="px-5 py-3 text-sm text-gray-600">
-                              {lead.assigned_name || "Unassigned"}
-                            </td>
                             <td className="px-5 py-3">
                               <span
-                                className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ${s.bg} ${s.text}`}
+                                className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold ${s.bg} ${s.text}`}
                               >
                                 <span
                                   className={`h-1.5 w-1.5 rounded-full ${s.dot}`}
                                 />
                                 {s.label}
                               </span>
+                              {lead.follow_up_local && !lead.follow_up_done && (
+                                <p
+                                  className={`mt-1 whitespace-nowrap text-[11px] font-medium ${
+                                    isOverdue(lead.follow_up_local) ? "text-red-600" : "text-indigo-600"
+                                  }`}
+                                >
+                                  📅 {fmtFollowUp(lead.follow_up_local)}
+                                </p>
+                              )}
+                              {lead.status === "lost" && lead.lost_reason && (
+                                <p className="mt-1 text-[11px] text-red-600">
+                                  {lostReasonText(lead.lost_reason, lead.lost_reason_other)}
+                                </p>
+                              )}
                             </td>
                             <td className="px-5 py-3">
                               <span
@@ -680,8 +800,11 @@ export default function LeadsPage() {
                                 {p.label}
                               </span>
                             </td>
-                            <td className="px-5 py-3 text-right text-sm font-semibold text-gray-900">
-                              {formatCurrency(Number(lead.estimated_value))}
+                            <td className="whitespace-nowrap px-5 py-3 text-sm text-gray-700">
+                              {lead.budget_range ? BUDGET_LABELS[lead.budget_range] || lead.budget_range : "-"}
+                            </td>
+                            <td className="px-5 py-3 text-sm text-gray-600">
+                              {lead.assigned_name || "Unassigned"}
                             </td>
                             <td className="px-5 py-3">
                               <div className="flex items-center justify-end gap-1">
@@ -881,82 +1004,32 @@ function CreateLeadModal({
   onClose: () => void;
   onCreated: () => void;
 }) {
-  const [form, setForm] = useState({
-    first_name: "",
-    last_name: "",
-    company_name: "",
-    email: "",
-    phone: "",
-    alternate_phone: "",
-    whatsapp: "",
-    designation: "",
-    source: "",
-    city: "",
-    assigned_to: "",
-    status: "new",
-    priority: "medium",
-    estimated_value: "",
-    expected_close_date: "",
-    address: "",
-    description: "",
-  });
+  const [form, setForm] = useState<LeadFormState>(EMPTY_LEAD_FORM);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const set = (k: keyof typeof form, v: string) =>
-    setForm((f) => ({ ...f, [k]: v }));
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-
-    if (!form.first_name.trim()) {
-      setError("First name is required");
+    const v = validateLeadForm(form);
+    if (v) {
+      setError(v);
       return;
     }
-
     setSaving(true);
     try {
-      const payload: Record<string, unknown> = {
-        first_name: form.first_name.trim(),
-        last_name: form.last_name.trim() || null,
-        company_name: form.company_name.trim() || null,
-        email: form.email.trim() || null,
-        phone: form.phone.trim() || null,
-        alternate_phone: form.alternate_phone.trim() || null,
-        whatsapp: form.whatsapp.trim() || null,
-        designation: form.designation.trim() || null,
-        source: form.source || null,
-        source_name:
-          LEAD_SOURCES.find((s) => s.value === form.source)?.label || null,
-        city: form.city || null,
-        city_name: form.city || null,
-        assigned_to: form.assigned_to ? Number(form.assigned_to) : null,
-        status: form.status,
-        priority: form.priority,
-        estimated_value: form.estimated_value
-          ? Number(form.estimated_value)
-          : 0,
-        expected_close_date: form.expected_close_date || null,
-        address: form.address.trim() || null,
-        description: form.description.trim() || null,
-      };
-
       const res = await fetch("/api/leads", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify(payload),
+        body: JSON.stringify(formToPayload(form)),
       });
-
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
         throw new Error(
-          (j as { error?: string }).error ||
-            `Failed to create lead (${res.status})`
+          (j as { error?: string }).error || `Failed to create lead (${res.status})`
         );
       }
-
       onCreated();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
@@ -969,207 +1042,23 @@ function CreateLeadModal({
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-sm">
       <div className="my-8 w-full max-w-2xl rounded-2xl bg-white shadow-xl">
         <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
-          <h2 className="text-base font-semibold text-gray-900">
-            Create New Lead
-          </h2>
-          <button
-            onClick={onClose}
-            className="rounded-lg p-1.5 text-gray-500 transition hover:bg-gray-100"
-          >
-            <svg
-              className="h-5 w-5"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M6 18L18 6M6 6l12 12"
-              />
+          <h2 className="text-base font-semibold text-gray-900">Create New Lead</h2>
+          <button onClick={onClose} className="rounded-lg p-1.5 text-gray-500 transition hover:bg-gray-100">
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="p-5">
           {error && (
-            <div className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
-              {error}
-            </div>
+            <div className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
           )}
-
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field label="First Name" required>
-              <input
-                type="text"
-                value={form.first_name}
-                onChange={(e) => set("first_name", e.target.value)}
-                required
-                className={inputCls}
-              />
-            </Field>
-            <Field label="Last Name">
-              <input
-                type="text"
-                value={form.last_name}
-                onChange={(e) => set("last_name", e.target.value)}
-                className={inputCls}
-              />
-            </Field>
-
-            <Field label="Company">
-              <input
-                type="text"
-                value={form.company_name}
-                onChange={(e) => set("company_name", e.target.value)}
-                className={inputCls}
-              />
-            </Field>
-            <Field label="Designation">
-              <input
-                type="text"
-                value={form.designation}
-                onChange={(e) => set("designation", e.target.value)}
-                className={inputCls}
-              />
-            </Field>
-
-            <Field label="Phone">
-              <input
-                type="text"
-                value={form.phone}
-                onChange={(e) => set("phone", e.target.value)}
-                className={inputCls}
-              />
-            </Field>
-            <Field label="Email">
-              <input
-                type="email"
-                value={form.email}
-                onChange={(e) => set("email", e.target.value)}
-                className={inputCls}
-              />
-            </Field>
-
-            <Field label="WhatsApp">
-              <input
-                type="text"
-                value={form.whatsapp}
-                onChange={(e) => set("whatsapp", e.target.value)}
-                className={inputCls}
-              />
-            </Field>
-            <Field label="Source">
-              <select
-                value={form.source}
-                onChange={(e) => set("source", e.target.value)}
-                className={inputCls}
-              >
-                <option value="">Select source</option>
-                {LEAD_SOURCE_GROUPS.map((g) => (
-                  <optgroup key={g} label={g}>
-                    {LEAD_SOURCES.filter((s) => s.group === g).map((s) => (
-                      <option key={s.value} value={s.value}>
-                        {s.label}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
-            </Field>
-
-            <Field label="City">
-              <CitySelect
-                value={form.city}
-                onChange={(v) => set("city", v)}
-              />
-            </Field>
-            <Field label="Assigned To">
-              <select
-                value={form.assigned_to}
-                onChange={(e) => set("assigned_to", e.target.value)}
-                className={inputCls}
-              >
-                <option value="">Unassigned</option>
-                {users.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-
-            <Field label="Status">
-              <select
-                value={form.status}
-                onChange={(e) => set("status", e.target.value)}
-                className={inputCls}
-              >
-                {STATUS_OPTIONS.filter((o) => o.value).map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Priority">
-              <select
-                value={form.priority}
-                onChange={(e) => set("priority", e.target.value)}
-                className={inputCls}
-              >
-                {PRIORITY_OPTIONS.filter((o) => o.value).map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </Field>
-
-            <Field label="Estimated Value (Rs)">
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={form.estimated_value}
-                onChange={(e) => set("estimated_value", e.target.value)}
-                className={inputCls}
-              />
-            </Field>
-            <Field label="Expected Close Date">
-              <input
-                type="date"
-                value={form.expected_close_date}
-                onChange={(e) => set("expected_close_date", e.target.value)}
-                className={inputCls}
-              />
-            </Field>
-
-            <div className="sm:col-span-2">
-              <Field label="Address">
-                <textarea
-                  rows={2}
-                  value={form.address}
-                  onChange={(e) => set("address", e.target.value)}
-                  className={inputCls}
-                />
-              </Field>
-            </div>
-
-            <div className="sm:col-span-2">
-              <Field label="Description / Notes">
-                <textarea
-                  rows={3}
-                  value={form.description}
-                  onChange={(e) => set("description", e.target.value)}
-                  className={inputCls}
-                />
-              </Field>
-            </div>
-          </div>
-
-          <div className="mt-6 flex items-center justify-end gap-2 border-t border-gray-100 pt-4">
+          <LeadFormFields form={form} setForm={setForm} users={users} />
+          {error && (
+            <div className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
+          )}
+          <div className="mt-5 flex justify-end gap-2 border-t border-gray-100 pt-4">
             <button
               type="button"
               onClick={onClose}
@@ -1183,7 +1072,7 @@ function CreateLeadModal({
               disabled={saving}
               className="inline-flex items-center gap-2 rounded-lg bg-[#17D65D] px-4 py-2 text-sm font-semibold text-black transition hover:bg-[#15c455] disabled:opacity-50"
             >
-              {saving ? "Saving..." : "Create Lead"}
+              {saving ? "Creating..." : "Create Lead"}
             </button>
           </div>
         </form>
