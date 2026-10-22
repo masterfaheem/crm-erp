@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
+import { ensureStockTable, removeDocStock, syncDocStock } from "@/lib/ledger";
 
 export async function GET(
   req: NextRequest,
@@ -79,6 +80,7 @@ export async function PUT(
     }> = Array.isArray(body.items) ? body.items : [];
 
     if (!supplier_id || !bill_date || !items.length) {
+      conn.release();
       return NextResponse.json(
         { error: "Supplier, bill date and at least one line item are required." },
         { status: 400 }
@@ -89,7 +91,7 @@ export async function PUT(
       "SELECT id FROM purchase_bills WHERE id = ? AND company_id = ? LIMIT 1",
       [id, companyId]
     );
-    if (!existing) return NextResponse.json({ error: "Purchase bill not found." }, { status: 404 });
+    if (!existing) { conn.release(); return NextResponse.json({ error: "Purchase bill not found." }, { status: 404 }); }
 
     let subtotal = 0, tax_total = 0, discount_total = 0, grand_total = 0;
     const prepared = items.map((it) => {
@@ -117,6 +119,7 @@ export async function PUT(
 
     const balance = Math.max(0, grand_total - paid_amount);
 
+    await ensureStockTable();
     await conn.beginTransaction();
 
     await conn.query(
@@ -150,6 +153,9 @@ export async function PUT(
         ]
       );
     }
+
+    // re-sync stock in (+qty) from the edited lines
+    await syncDocStock(conn, companyId, "purchase_bill", id, user.id);
 
     await conn.commit();
     conn.release();
@@ -190,7 +196,20 @@ export async function DELETE(
     );
     if (!existing) return NextResponse.json({ error: "Purchase bill not found." }, { status: 404 });
 
-    await query("DELETE FROM purchase_bills WHERE id = ? AND company_id = ?", [id, companyId]);
+    await ensureStockTable();
+    const conn = await getPool().getConnection();
+    try {
+      await conn.beginTransaction();
+      await removeDocStock(conn, companyId, "purchase_bill", id);
+      await conn.query("DELETE FROM purchase_bill_items WHERE purchase_bill_id = ?", [id]);
+      await conn.query("DELETE FROM purchase_bills WHERE id = ? AND company_id = ?", [id, companyId]);
+      await conn.commit();
+    } catch (e) {
+      await conn.rollback();
+      throw e;
+    } finally {
+      conn.release();
+    }
     return NextResponse.json({ success: true });
   } catch (err) {
     console.error("[DELETE /api/purchase-bills/:id]", err);
