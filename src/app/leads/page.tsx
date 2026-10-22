@@ -67,6 +67,8 @@ interface LeadRow {
   follow_up_done: number;
   lost_reason: string | null;
   lost_reason_other: string | null;
+  handover_id: number | null;
+  order_number: string | null;
 }
 
 interface Pagination {
@@ -290,10 +292,13 @@ export default function LeadsPage() {
         method: "DELETE",
         credentials: "include",
       });
-      if (!res.ok) throw new Error("Delete failed");
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || "Failed to delete lead");
+      }
       fetchLeads();
-    } catch {
-      window.alert("Failed to delete lead");
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : "Failed to delete lead");
     }
   };
 
@@ -785,6 +790,11 @@ export default function LeadsPage() {
                                   }`}
                                 >
                                   📅 {fmtFollowUp(lead.follow_up_local)}
+                                </p>
+                              )}
+                              {lead.handover_id && (
+                                <p className="mt-1 whitespace-nowrap text-[11px] font-semibold text-green-700">
+                                  📦 {lead.order_number}
                                 </p>
                               )}
                               {lead.status === "lost" && lead.lost_reason && (
