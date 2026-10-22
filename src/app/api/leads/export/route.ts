@@ -13,6 +13,9 @@ import {
   LEAD_SOURCES,
   LEAD_STATUS_LABELS,
   PAKISTAN_CITIES,
+  PROFESSIONS,
+  BUDGET_RANGES,
+  LOST_REASONS,
 } from "@/lib/leadOptions";
 
 const MAX_EXPORT = 50000;
@@ -38,20 +41,26 @@ export async function GET(req: NextRequest) {
     if (template) {
       rows = [
         {
-          first_name: "Ali",
-          last_name: "Khan",
-          company_name: "ABC Traders",
-          designation: "Manager",
-          phone: "03001234567",
+          name: "Ali Khan",
           whatsapp: "03001234567",
-          email: "ali@example.com",
-          source: "Facebook",
           city: "Lahore",
-          status: "New",
+          source: "Facebook",
+          profession: "Student",
+          budget_range: "60k – 80k",
+          use_cases: "Study, Graphic Design",
+          requirement_note: "16GB RAM, backlit keyboard",
+          status: "Follow Up",
           priority: "Medium",
-          estimated_value: 150000,
-          expected_close_date: today,
-          description: "Wants a gaming laptop",
+          follow_up_at: `${today} 17:00`,
+          follow_up_note: "Send 2 options",
+          description: "Asked on Instagram DM",
+          delivery_name: "Ali Khan",
+          delivery_phone: "03001234567",
+          delivery_house: "12-B",
+          delivery_street: "Street 5",
+          delivery_area: "Johar Town Block J",
+          delivery_landmark: "Near Emporium Mall",
+          delivery_city: "Lahore",
         },
       ];
     } else {
@@ -132,6 +141,10 @@ export async function GET(req: NextRequest) {
           ["status", Object.values(LEAD_STATUS_LABELS)],
           ["priority", Object.values(LEAD_PRIORITY_LABELS)],
           ["city", PAKISTAN_CITIES],
+          ["profession", PROFESSIONS.map((o) => o.label)],
+          ["budget_range", BUDGET_RANGES.map((o) => o.label)],
+          ["lost_reason", LOST_REASONS.map((o) => o.label)],
+          ["delivery_city", PAKISTAN_CITIES],
         ];
         listData.forEach(([, values], i) => {
           values.forEach((v, r) => {
@@ -148,7 +161,8 @@ export async function GET(req: NextRequest) {
             ws.getCell(r, colIdx).dataValidation = {
               type: "list",
               allowBlank: true,
-              showErrorMessage: key !== "city", // city may be any town
+              // free text allowed for city, profession & lost reason ("other")
+            showErrorMessage: !["city", "delivery_city", "profession", "lost_reason"].includes(key),
               formulae: [formula],
             };
           }
