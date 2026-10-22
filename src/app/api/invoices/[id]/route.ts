@@ -159,6 +159,26 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
       );
     }
 
+    // Online order billed by this invoice: block once dispatched, otherwise send it back to "To bill"
+    try {
+      const [h] = await query<any[]>(
+        "SELECT id, status, sales_order_id FROM crm_order_handovers WHERE invoice_id = ? AND company_id = ? LIMIT 1",
+        [id, companyId]
+      );
+      if (h && h.status !== "invoiced") {
+        return NextResponse.json(
+          { error: "This bill belongs to an online order that is already dispatched — it can't be deleted." },
+          { status: 409 }
+        );
+      }
+      if (h) {
+        await query("UPDATE crm_order_handovers SET invoice_id = NULL, status = 'pending' WHERE id = ?", [h.id]);
+        await query("UPDATE sales_orders SET status = 'confirmed' WHERE id = ? AND company_id = ?", [h.sales_order_id, companyId]);
+      }
+    } catch {
+      /* handover table not created yet */
+    }
+
     await query("DELETE FROM invoices WHERE id = ? AND company_id = ?", [id, companyId]);
     return NextResponse.json({ success: true });
   } catch (err) {
