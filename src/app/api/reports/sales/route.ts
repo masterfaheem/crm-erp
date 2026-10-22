@@ -103,18 +103,33 @@ export async function GET(req: NextRequest) {
             FROM ${HANDOVER_TABLE} h WHERE ${HW}`),
       hq(`SELECT h.review_rating AS k, COUNT(*) AS n FROM ${HANDOVER_TABLE} h
            WHERE ${HW} AND h.review_rating IS NOT NULL GROUP BY h.review_rating ORDER BY k DESC`),
-      hq(`SELECT IFNULL(h.advance_method,'none') AS k, COUNT(*) AS n, COALESCE(SUM(h.advance_amount),0) AS amount
-            FROM ${HANDOVER_TABLE} h WHERE ${HW} GROUP BY k ORDER BY amount DESC`),
+      /* how money came in (all cleared payments in range: POS + online orders) */
+      toNum(
+        (
+          await pool.query(
+            `SELECT CASE
+                      WHEN cp.method = 'online' AND cp.reference LIKE 'JazzCash%' THEN 'jazzcash'
+                      WHEN cp.method = 'online' AND cp.reference LIKE 'Easypaisa%' THEN 'easypaisa'
+                      WHEN cp.method = 'online' THEN 'wallet'
+                      ELSE cp.method END AS k,
+                    COUNT(*) AS n, COALESCE(SUM(cp.amount),0) AS amount
+               FROM customer_payments cp
+              WHERE cp.company_id = ? AND cp.status = 'cleared'
+                ${from ? "AND cp.payment_date >= ?" : ""} ${to ? "AND cp.payment_date <= ?" : ""}
+              GROUP BY k ORDER BY amount DESC`,
+            [user.company_id, ...(from ? [from] : []), ...(to ? [to] : [])]
+          )
+        )[0] as Row[]
+      ),
       hq(`SELECT h.delivery_city AS k, COUNT(*) AS n, COALESCE(SUM(h.total_amount),0) AS amount
             FROM ${HANDOVER_TABLE} h WHERE ${HW} GROUP BY k ORDER BY n DESC LIMIT 15`),
     ]);
 
-    /* COD still to collect on billed online orders */
+    /* credit still to collect: customers whose khata shows a balance due (all time) */
     const [codRows] = await pool.query(
-      `SELECT COALESCE(SUM(i.balance),0) AS cod_due, COUNT(*) AS n
-         FROM ${HANDOVER_TABLE} h JOIN invoices i ON i.id = h.invoice_id
-        WHERE ${HW} AND i.balance > 0 AND i.status <> 'cancelled'`,
-      hp
+      `SELECT COALESCE(SUM(c.current_balance),0) AS cod_due, COUNT(*) AS n
+         FROM customers c WHERE c.company_id = ? AND c.current_balance > 0`,
+      [user.company_id]
     );
 
     return NextResponse.json({
