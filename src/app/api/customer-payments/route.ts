@@ -24,7 +24,19 @@ async function recalcInvoice(
       WHERE company_id = ? AND invoice_id = ? AND status = 'cleared'`,
     [companyId, invoiceId]
   ) as any[];
-  const paid = Number(sum?.paid ?? 0);
+  let paid = Number(sum?.paid ?? 0);
+
+  /* advance taken at "Convert to Order" (online orders) also counts as paid */
+  try {
+    const [adv] = await conn.query(
+      `SELECT COALESCE(SUM(advance_amount), 0) AS adv FROM crm_order_handovers
+        WHERE company_id = ? AND invoice_id = ?`,
+      [companyId, invoiceId]
+    ) as any[];
+    paid += Number(adv?.adv ?? 0);
+  } catch {
+    /* handover table not created yet */
+  }
 
   const [inv] = await conn.query(
     "SELECT grand_total FROM invoices WHERE id = ? AND company_id = ?",
