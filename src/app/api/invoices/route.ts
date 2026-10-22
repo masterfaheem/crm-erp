@@ -1,20 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, getPool } from "@/lib/db";
+import { ensureLedgerReady } from "@/lib/ledgerSetup";
 import { requireUser, unauthorized } from "@/lib/requireUser";
+import { addCustomerPayment, ensureStockTable, recalcInvoice, syncDocStock, nextDocNumber } from "@/lib/ledger";
 
 async function nextInvoiceNumber(companyId: number): Promise<string> {
-  const year = new Date().getFullYear();
-  const [row] = await query<Array<{ c: number }>>(
-    "SELECT COUNT(*) AS c FROM invoices WHERE company_id = ? AND YEAR(created_at) = ?",
-    [companyId, year]
-  );
-  const seq = (row?.c ?? 0) + 1;
-  return `INV-${year}-${String(seq).padStart(4, "0")}`;
+  return nextDocNumber("invoices", "invoice_number", "INV", companyId);
 }
 
 export async function GET(req: NextRequest) {
   const user = await requireUser(req);
   if (!user) return unauthorized();
+  await ensureLedgerReady().catch((e) => console.error("ledger setup", e));
   const companyId = user.company_id;
 
   try {
@@ -119,10 +116,21 @@ export async function POST(req: NextRequest) {
       };
     });
 
+    /* POS extras: order-level discount + shipping (amounts in Rs) */
+    const orderDiscount = Math.max(0, Number(body.order_discount_amount) || 0);
+    const shipping = Math.max(0, Number(body.shipping_total ?? body.shipping_fee) || 0);
+    discount_total += Math.min(orderDiscount, grand_total);
+    grand_total = Math.max(0, grand_total - orderDiscount) + shipping;
+    grand_total = Math.round(grand_total * 100) / 100;
+
+    await ensureStockTable();
     await conn.beginTransaction();
 
-    /* ---- Online order (lead handover): bill only once, advance counts as paid ---- */
-    let handover: { id: number; advance_amount: number } | null = null;
+    /* ---- Online order (lead handover): bill only once, its payment is linked ---- */
+    let handover: {
+      id: number; advance_amount: number; payment_id: number | null;
+      advance_method: string | null; advance_reference: string | null; order_number: string;
+    } | null = null;
     if (sales_order_id) {
       const [soRows] = await conn.query<any>(
         `SELECT id FROM sales_orders WHERE id = ? AND company_id = ? FOR UPDATE`,
@@ -146,11 +154,16 @@ export async function POST(req: NextRequest) {
       }
       try {
         const [hRows] = await conn.query<any>(
-          `SELECT id, advance_amount FROM crm_order_handovers WHERE sales_order_id = ? AND company_id = ? LIMIT 1`,
+          `SELECT h.id, h.advance_amount, h.payment_id, h.advance_method, h.advance_reference, so.order_number
+             FROM crm_order_handovers h JOIN sales_orders so ON so.id = h.sales_order_id
+            WHERE h.sales_order_id = ? AND h.company_id = ? LIMIT 1`,
           [sales_order_id, companyId]
         );
         const h = (hRows as any[])[0];
-        if (h) handover = { id: h.id, advance_amount: Number(h.advance_amount) || 0 };
+        if (h) handover = {
+          id: h.id, advance_amount: Number(h.advance_amount) || 0, payment_id: h.payment_id || null,
+          advance_method: h.advance_method, advance_reference: h.advance_reference, order_number: h.order_number,
+        };
       } catch {
         /* handover table not created yet */
       }
@@ -164,11 +177,11 @@ export async function POST(req: NextRequest) {
           invoice_date, due_date, status,
           subtotal, tax_total, discount_total, shipping_total, grand_total,
           paid_amount, balance, notes, terms, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
       [
         companyId, user.branch_id ?? null, invoice_number, customer_id, sales_order_id,
         invoice_date, due_date, status,
-        subtotal, tax_total, discount_total, grand_total,
+        subtotal, tax_total, discount_total, shipping, grand_total,
         grand_total, notes, terms, user.id,
       ]
     );
@@ -182,13 +195,6 @@ export async function POST(req: NextRequest) {
       );
     }
     if (handover) {
-      const paid = Math.min(handover.advance_amount, grand_total);
-      const balance = Math.max(0, grand_total - paid);
-      const invStatus = balance <= 0 ? "paid" : paid > 0 ? "partially_paid" : status;
-      await conn.query(
-        `UPDATE invoices SET paid_amount = ?, balance = ?, status = ? WHERE id = ?`,
-        [paid, balance, invStatus, invoiceId]
-      );
       await conn.query(
         `UPDATE crm_order_handovers SET invoice_id = ?, status = 'invoiced' WHERE id = ?`,
         [invoiceId, handover.id]
@@ -205,6 +211,50 @@ export async function POST(req: NextRequest) {
          p.discount_percent, p.line_subtotal, p.line_tax, p.line_discount, p.line_total]
       );
     }
+
+    /* ---- payment: online order payment is linked; POS payment is recorded ---- */
+    if (handover) {
+      if (handover.payment_id) {
+        await conn.query(
+          `UPDATE customer_payments SET invoice_id = ? WHERE id = ? AND company_id = ?`,
+          [invoiceId, handover.payment_id, companyId]
+        );
+      } else if (handover.advance_amount > 0) {
+        const pid = await addCustomerPayment(conn, user, {
+          customer_id, invoice_id: invoiceId, amount: Math.min(handover.advance_amount, grand_total),
+          method: handover.advance_method || "bank_transfer", reference: handover.advance_reference,
+          notes: `Payment for ${handover.order_number}`,
+        });
+        await conn.query(`UPDATE crm_order_handovers SET payment_id = ? WHERE id = ?`, [pid, handover.id]);
+      }
+      /* anything received on top of the order payment (balance paid at billing) */
+      const extra =
+        Math.min(Math.max(0, Number(body.amount_paid) || 0), grand_total) -
+        Math.min(handover.advance_amount, grand_total);
+      if (extra > 0.009) {
+        await addCustomerPayment(conn, user, {
+          customer_id, invoice_id: invoiceId, amount: extra,
+          method: String(body.payment_method || "bank_transfer"),
+          reference: body.payment_reference ? String(body.payment_reference).slice(0, 100) : null,
+          payment_date: invoice_date, notes: `Balance received for ${handover.order_number}`,
+        });
+      }
+    } else {
+      const paidNow = Math.min(Math.max(0, Number(body.amount_paid) || 0), grand_total);
+      if (paidNow > 0) {
+        await addCustomerPayment(conn, user, {
+          customer_id, invoice_id: invoiceId, amount: paidNow,
+          method: String(body.payment_method || "cash"),
+          reference: body.payment_reference
+            ? String(body.payment_reference).slice(0, 100)
+            : body.reference ? String(body.reference).slice(0, 100) : null,
+          payment_date: invoice_date, notes: "POS",
+        });
+      }
+    }
+
+    await syncDocStock(conn, companyId, "invoice", invoiceId, user.id);
+    await recalcInvoice(conn, invoiceId, companyId);
 
     await conn.commit(); conn.release();
 
