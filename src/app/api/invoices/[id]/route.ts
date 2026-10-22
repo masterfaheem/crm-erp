@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
+import { ensureStockTable, recalcCustomer, recalcInvoice, removeDocStock, syncDocStock } from "@/lib/ledger";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await requireUser(req);
@@ -54,12 +55,33 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     const items: any[] = Array.isArray(body.items) ? body.items : [];
 
     if (!customer_id || !invoice_date || !items.length) {
+      conn.release();
       return NextResponse.json({ error: "Customer, date and at least one item are required." }, { status: 400 });
     }
     const [existing] = await query<any[]>(
-      "SELECT id, paid_amount FROM invoices WHERE id = ? AND company_id = ? LIMIT 1", [id, companyId]
+      "SELECT id, paid_amount, customer_id, discount_total, shipping_total FROM invoices WHERE id = ? AND company_id = ? LIMIT 1",
+      [id, companyId]
     );
-    if (!existing) return NextResponse.json({ error: "Invoice not found." }, { status: 404 });
+    if (!existing) {
+      conn.release();
+      return NextResponse.json({ error: "Invoice not found." }, { status: 404 });
+    }
+    await ensureStockTable();
+    /* keep the bill-level discount + shipping that POS saved (unless sent again) */
+    const [lineDisc] = await query<any[]>(
+      "SELECT COALESCE(SUM(line_discount), 0) AS d FROM invoice_items WHERE invoice_id = ?",
+      [id]
+    );
+    const orderDiscount = Math.max(
+      0,
+      body.order_discount_amount !== undefined
+        ? Number(body.order_discount_amount) || 0
+        : Number(existing.discount_total || 0) - Number(lineDisc?.d || 0)
+    );
+    const shipping = Math.max(
+      0,
+      body.shipping_total !== undefined ? Number(body.shipping_total) || 0 : Number(existing.shipping_total || 0)
+    );
 
     let subtotal = 0, tax_total = 0, discount_total = 0, grand_total = 0;
     const prepared = items.map((it) => {
@@ -81,6 +103,8 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       };
     });
 
+    discount_total += orderDiscount;
+    grand_total = Math.max(0, grand_total - orderDiscount) + shipping;
     // recompute balance from existing paid_amount
     const paid = Number(existing.paid_amount ?? 0);
     const balance = Math.max(0, grand_total - paid);
@@ -96,11 +120,11 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     await conn.beginTransaction();
     await conn.query(
       `UPDATE invoices SET customer_id = ?, invoice_date = ?, due_date = ?, status = ?,
-         subtotal = ?, tax_total = ?, discount_total = ?, grand_total = ?,
+         subtotal = ?, tax_total = ?, discount_total = ?, shipping_total = ?, grand_total = ?,
          balance = ?, notes = ?, terms = ?
        WHERE id = ? AND company_id = ?`,
       [customer_id, invoice_date, due_date, derivedStatus,
-       subtotal, tax_total, discount_total, grand_total,
+       subtotal, tax_total, discount_total, shipping, grand_total,
        balance, notes, terms, id, companyId]
     );
     await conn.query("DELETE FROM invoice_items WHERE invoice_id = ?", [id]);
@@ -114,6 +138,11 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
          p.discount_percent, p.line_subtotal, p.line_tax, p.line_discount, p.line_total]
       );
     }
+    // payments on this bill move with the customer
+    await conn.query("UPDATE customer_payments SET customer_id = ? WHERE invoice_id = ? AND company_id = ?", [customer_id, id, companyId]);
+    await syncDocStock(conn, companyId, "invoice", id, user.id);
+    await recalcInvoice(conn, id, companyId);
+    if (Number(existing.customer_id) !== customer_id) await recalcCustomer(conn, companyId, Number(existing.customer_id));
     await conn.commit(); conn.release();
 
     const [row] = await query<any[]>(
@@ -141,47 +170,65 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   const id = Number(rawId);
   if (!Number.isFinite(id)) return NextResponse.json({ error: "Invalid id." }, { status: 400 });
 
+  const conn = await getPool().getConnection();
   try {
-    const [existing] = await query<any[]>(
-      "SELECT id FROM invoices WHERE id = ? AND company_id = ? LIMIT 1", [id, companyId]
-    );
-    if (!existing) return NextResponse.json({ error: "Invoice not found." }, { status: 404 });
+    const [[existing]] = await conn.query(
+      "SELECT id, customer_id FROM invoices WHERE id = ? AND company_id = ? LIMIT 1", [id, companyId]
+    ) as any[];
+    if (!existing) {
+      conn.release();
+      return NextResponse.json({ error: "Invoice not found." }, { status: 404 });
+    }
 
-    // Block delete if any cleared payments exist
-    const [pay] = await query<any[]>(
-      "SELECT COUNT(*) AS cnt FROM customer_payments WHERE invoice_id = ? AND company_id = ? AND status = 'cleared'",
-      [id, companyId]
-    );
-    if ((pay?.cnt ?? 0) > 0) {
+    // Online order billed by this invoice: block once dispatched, otherwise send it back to "To bill"
+    let h: any = null;
+    try {
+      const [[row]] = await conn.query(
+        "SELECT id, status, sales_order_id, payment_id FROM crm_order_handovers WHERE invoice_id = ? AND company_id = ? LIMIT 1",
+        [id, companyId]
+      ) as any[];
+      h = row || null;
+    } catch {
+      /* handover table not created yet */
+    }
+    if (h && h.status !== "invoiced") {
+      conn.release();
       return NextResponse.json(
-        { error: `Cannot delete: ${pay.cnt} cleared payment(s) are linked to this invoice.` },
+        { error: "This bill belongs to an online order that is already dispatched — it can't be deleted." },
         { status: 409 }
       );
     }
 
-    // Online order billed by this invoice: block once dispatched, otherwise send it back to "To bill"
-    try {
-      const [h] = await query<any[]>(
-        "SELECT id, status, sales_order_id FROM crm_order_handovers WHERE invoice_id = ? AND company_id = ? LIMIT 1",
-        [id, companyId]
+    // Block delete if cleared payments exist (the online order's own payment stays with the order)
+    const [[pay]] = await conn.query(
+      "SELECT COUNT(*) AS cnt FROM customer_payments WHERE invoice_id = ? AND company_id = ? AND status = 'cleared' AND id <> ?",
+      [id, companyId, h?.payment_id || 0]
+    ) as any[];
+    if (Number(pay?.cnt ?? 0) > 0) {
+      conn.release();
+      return NextResponse.json(
+        { error: `Cannot delete: ${pay.cnt} cleared payment(s) are linked to this invoice. Delete the payment first.` },
+        { status: 409 }
       );
-      if (h && h.status !== "invoiced") {
-        return NextResponse.json(
-          { error: "This bill belongs to an online order that is already dispatched — it can't be deleted." },
-          { status: 409 }
-        );
-      }
-      if (h) {
-        await query("UPDATE crm_order_handovers SET invoice_id = NULL, status = 'pending' WHERE id = ?", [h.id]);
-        await query("UPDATE sales_orders SET status = 'confirmed' WHERE id = ? AND company_id = ?", [h.sales_order_id, companyId]);
-      }
-    } catch {
-      /* handover table not created yet */
     }
 
-    await query("DELETE FROM invoices WHERE id = ? AND company_id = ?", [id, companyId]);
+    await conn.beginTransaction();
+    if (h) {
+      await conn.query("UPDATE crm_order_handovers SET invoice_id = NULL, status = 'pending' WHERE id = ?", [h.id]);
+      await conn.query("UPDATE sales_orders SET status = 'confirmed' WHERE id = ? AND company_id = ?", [h.sales_order_id, companyId]);
+      if (h.payment_id) {
+        await conn.query("UPDATE customer_payments SET invoice_id = NULL WHERE id = ? AND company_id = ?", [h.payment_id, companyId]);
+      }
+    }
+    await removeDocStock(conn, companyId, "invoice", id);
+    await conn.query("DELETE FROM invoice_items WHERE invoice_id = ?", [id]);
+    await conn.query("DELETE FROM invoices WHERE id = ? AND company_id = ?", [id, companyId]);
+    await recalcCustomer(conn, companyId, Number(existing.customer_id));
+    await conn.commit(); conn.release();
     return NextResponse.json({ success: true });
   } catch (err) {
+    try { await conn.rollback(); } catch {}
+    conn.release();
     console.error("[DELETE /api/invoices/:id]", err);
     return NextResponse.json({ error: "Failed to delete invoice." }, { status: 500 });
   }
