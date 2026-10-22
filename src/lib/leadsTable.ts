@@ -1,4 +1,5 @@
 import { getPool } from "@/lib/db";
+import { ensureHandoverTable } from "@/lib/orderHandover";
 import {
   BUDGET_RANGES,
   LEAD_SOURCES,
@@ -99,6 +100,9 @@ export async function ensureLeadsTable(): Promise<void> {
   await pool.query(
     `UPDATE ${LEADS_TABLE} SET status = 'lost', lost_reason = IFNULL(lost_reason, 'unknown') WHERE status = 'junk'`
   );
+
+  // lead -> customer/order handover table (used by LEAD_SELECT)
+  await ensureHandoverTable();
 
   ensured = true;
 }
@@ -269,9 +273,14 @@ export function nowPKT(offsetDays = 0): string {
 
 export const LEAD_SELECT = `
   SELECT l.*, u.name AS assigned_name,
-         DATE_FORMAT(l.follow_up_at, '%Y-%m-%dT%H:%i') AS follow_up_local
+         DATE_FORMAT(l.follow_up_at, '%Y-%m-%dT%H:%i') AS follow_up_local,
+         ho.id AS handover_id, ho.status AS order_status, ho.customer_id AS order_customer_id,
+         ho.sales_order_id AS order_sales_order_id,
+         (SELECT order_number FROM sales_orders WHERE id = ho.sales_order_id) AS order_number,
+         (SELECT customer_code FROM customers WHERE id = ho.customer_id) AS order_customer_code
     FROM ${LEADS_TABLE} l
     LEFT JOIN users u ON u.id = l.assigned_to
+    LEFT JOIN crm_order_handovers ho ON ho.lead_id = l.id
 `;
 
 /* ============================================================
