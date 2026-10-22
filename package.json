@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
+    "exceljs": "^4.4.0",
     "jose": "^6.2.12",
     "jsonwebtoken": "^9.0.3",
     "mysql": "^2.18.1",
