@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Navbar from "@/app/components/Navbar";
+import { OrderBoard, type Order as BoardOrder } from "@/app/dispatch/OrderBoard";
 
 /* ============================================================
    TYPES
@@ -224,6 +225,25 @@ function POSContent() {
   const [linkedOrder, setLinkedOrder] = useState<OnlineOrder | null>(null);
   const [showQuickCustomer, setShowQuickCustomer] = useState(false);
   const [notice, setNotice] = useState("");
+  const [showOrders, setShowOrders] = useState(false);
+  const [orderCounts, setOrderCounts] = useState<Record<string, number>>({});
+  const [boardKey, setBoardKey] = useState(0);
+
+  /* online-order counts for the header badge (refresh every minute) */
+  const refreshCounts = useCallback(async () => {
+    try {
+      const r = await fetch("/api/dispatch?status=pending", { credentials: "include" });
+      if (r.ok) setOrderCounts((await r.json()).counts || {});
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    refreshCounts();
+    const t = setInterval(refreshCounts, 60000);
+    return () => clearInterval(t);
+  }, [refreshCounts]);
 
   /* ---------- Online orders (won leads) ---------- */
   const loadOrderIntoCart = useCallback((o: OnlineOrder) => {
@@ -274,6 +294,26 @@ function POSContent() {
       /* ignore */
     }
   }, []);
+
+  /* "Load & Bill" from the Online Orders panel */
+  const billFromBoard = useCallback(
+    async (o: BoardOrder) => {
+      try {
+        const cr = await fetch(`/api/customers/${o.customer_id}`, { credentials: "include" });
+        if (!cr.ok) throw new Error();
+        const c = (await cr.json()) as Customer;
+        const order = o as unknown as OnlineOrder;
+        setSelectedCustomer(c);
+        setPendingOrders([order]);
+        loadOrderIntoCart(order);
+        setShowOrders(false);
+        setNotice(`Order ${o.order_number} loaded — check the cart and click Charge to bill.`);
+      } catch {
+        setNotice("Could not load this order's customer.");
+      }
+    },
+    [loadOrderIntoCart]
+  );
 
   /* open POS with ?order=<sales_order_id> from the dispatch page */
   useEffect(() => {
@@ -497,6 +537,7 @@ function POSContent() {
       setSelectedCustomer(null);
       setLinkedOrder(null);
       setPendingOrders([]);
+      refreshCounts();
       setAmountPaid("");
       setOrderDiscountPercent(0);
       setShippingFee(0);
@@ -531,6 +572,26 @@ function POSContent() {
               year: "numeric",
             })}
           </span>
+          <button
+            type="button"
+            onClick={() => {
+              setShowOrders(true);
+              setBoardKey((k) => k + 1);
+            }}
+            className="relative inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-800 shadow-sm hover:bg-gray-50"
+          >
+            📦 Online Orders
+            {!!orderCounts.pending && (
+              <span className="rounded-full bg-red-500 px-1.5 text-[10px] font-bold text-white">
+                {orderCounts.pending} to bill
+              </span>
+            )}
+            {!!orderCounts.invoiced && (
+              <span className="rounded-full bg-blue-500 px-1.5 text-[10px] font-bold text-white">
+                {orderCounts.invoiced} to dispatch
+              </span>
+            )}
+          </button>
           <span className="inline-flex items-center gap-1.5 rounded-full border border-[#17D65D]/30 bg-[#17D65D]/10 px-2.5 py-1 text-[11px] font-semibold text-[#0fa846]">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#17D65D]" />
             Register open
@@ -927,6 +988,30 @@ function POSContent() {
       </div>
 
       {/* CHECKOUT MODAL */}
+      {showOrders && (
+        <div className="fixed inset-0 z-50 flex justify-end bg-black/40" onClick={() => setShowOrders(false)}>
+          <div
+            className="h-full w-full max-w-xl overflow-y-auto bg-gray-50 p-4 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-gray-900">📦 Online Orders</h2>
+                <p className="text-xs text-gray-500">Bill → Dispatch → Deliver → Review</p>
+              </div>
+              <button onClick={() => setShowOrders(false)} className="rounded-md p-1.5 text-gray-500 hover:bg-gray-200">✕</button>
+            </div>
+            <OrderBoard
+              compact
+              initialTab={orderCounts.pending ? "pending" : "invoiced"}
+              refreshKey={boardKey}
+              onBill={billFromBoard}
+              onTabChange={() => refreshCounts()}
+            />
+          </div>
+        </div>
+      )}
+
       {showQuickCustomer && (
         <QuickCustomerModal
           onClose={() => setShowQuickCustomer(false)}
