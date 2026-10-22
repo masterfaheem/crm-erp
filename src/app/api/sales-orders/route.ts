@@ -1,15 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
+import { nextDocNumber } from "@/lib/ledger";
 
 async function nextSalesOrderNumber(companyId: number): Promise<string> {
-  const year = new Date().getFullYear();
-  const [row] = await query<Array<{ c: number }>>(
-    "SELECT COUNT(*) AS c FROM sales_orders WHERE company_id = ? AND YEAR(created_at) = ?",
-    [companyId, year]
-  );
-  const seq = (row?.c ?? 0) + 1;
-  return `SO-${year}-${String(seq).padStart(4, "0")}`;
+  return nextDocNumber("sales_orders", "order_number", "SO", companyId);
 }
 
 export async function GET(req: NextRequest) {
