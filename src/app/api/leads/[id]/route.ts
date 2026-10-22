@@ -3,14 +3,10 @@ import { getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
 import {
   LEADS_TABLE,
-  LEAD_PRIORITIES,
   LEAD_SELECT,
-  LEAD_SOURCE_VALUES,
-  LEAD_STATUSES,
-  cleanDate,
-  cleanStr,
   ensureLeadsTable,
   mapLeadRow,
+  parseLeadInput,
 } from "@/lib/leadsTable";
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -42,7 +38,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   }
 }
 
-/* PUT /api/leads/:id  -> update only the fields sent */
+/* PUT /api/leads/:id  -> update only the fields sent (see parseLeadInput) */
 export async function PUT(req: NextRequest, { params }: Ctx) {
   try {
     const user = await requireUser(req);
@@ -55,60 +51,12 @@ export async function PUT(req: NextRequest, { params }: Ctx) {
     }
 
     const body = await req.json().catch(() => ({}));
-    const sets: string[] = [];
-    const vals: unknown[] = [];
-    const put = (col: string, v: unknown) => {
-      sets.push(`${col} = ?`);
-      vals.push(v);
-    };
-
-    const strFields: [string, number][] = [
-      ["last_name", 120],
-      ["company_name", 200],
-      ["designation", 120],
-      ["email", 190],
-      ["phone", 40],
-      ["alternate_phone", 40],
-      ["whatsapp", 40],
-      ["city", 100],
-      ["address", 5000],
-      ["description", 10000],
-    ];
-    if (body.first_name !== undefined) {
-      const fn = cleanStr(body.first_name, 120);
-      if (!fn) {
-        return NextResponse.json(
-          { error: "First name is required" },
-          { status: 400 }
-        );
-      }
-      put("first_name", fn);
+    const { values, error } = parseLeadInput(body, true, existing);
+    if (error) {
+      return NextResponse.json({ error }, { status: 400 });
     }
-    for (const [f, max] of strFields) {
-      if (body[f] !== undefined) put(f, cleanStr(body[f], max));
-    }
-    if (body.source !== undefined) {
-      const s = cleanStr(body.source, 50);
-      if (s && !LEAD_SOURCE_VALUES.includes(s)) {
-        return NextResponse.json({ error: "Invalid source" }, { status: 400 });
-      }
-      put("source", s);
-    }
-    if (body.status !== undefined && LEAD_STATUSES.includes(body.status)) {
-      put("status", body.status);
-    }
-    if (body.priority !== undefined && LEAD_PRIORITIES.includes(body.priority)) {
-      put("priority", body.priority);
-    }
-    if (body.assigned_to !== undefined) {
-      put("assigned_to", body.assigned_to ? Number(body.assigned_to) || null : null);
-    }
-    if (body.estimated_value !== undefined) {
-      put("estimated_value", Number(body.estimated_value) || 0);
-    }
-    if (body.expected_close_date !== undefined) {
-      put("expected_close_date", cleanDate(body.expected_close_date));
-    }
+    const sets = Object.keys(values).map((c) => `${c} = ?`);
+    const vals = Object.values(values);
 
     if (sets.length) {
       await getPool().query(
