@@ -91,16 +91,15 @@ export const PAKISTAN_CITIES: string[] = Array.from(new Set(RAW_CITIES)).sort(
   (a, b) => a.localeCompare(b)
 );
 
-/* Status & priority (value -> label) */
+/* Status & priority (value -> label), in pipeline order */
 export const LEAD_STATUS_LABELS: Record<string, string> = {
   new: "New",
-  contacted: "Contacted",
-  qualified: "Qualified",
+  mature: "Mature",
   proposal: "Proposal",
   negotiation: "Negotiation",
+  follow_up: "Follow Up",
   won: "Won",
   lost: "Lost",
-  junk: "Junk",
 };
 
 export const LEAD_PRIORITY_LABELS: Record<string, string> = {
@@ -109,3 +108,82 @@ export const LEAD_PRIORITY_LABELS: Record<string, string> = {
   high: "High",
   urgent: "Urgent",
 };
+
+type Opt = { value: string; label: string };
+const toMap = (arr: Opt[]) =>
+  Object.fromEntries(arr.map((o) => [o.value, o.label])) as Record<string, string>;
+
+/* Profession ("other" -> free text) */
+export const PROFESSIONS: Opt[] = [
+  { value: "student", label: "Student" },
+  { value: "businessman", label: "Businessman" },
+  { value: "freelancer", label: "Freelancer" },
+  { value: "job_holder", label: "Job Holder" },
+  { value: "teacher", label: "Teacher" },
+  { value: "other", label: "Other" },
+];
+
+/* Budget range (PKR, thousands) */
+export const BUDGET_RANGES: Opt[] = [
+  { value: "30-40", label: "30k – 40k" },
+  { value: "40-50", label: "40k – 50k" },
+  { value: "50-60", label: "50k – 60k" },
+  { value: "60-80", label: "60k – 80k" },
+  { value: "80-100", label: "80k – 100k" },
+  { value: "100-125", label: "100k – 125k" },
+  { value: "125-150", label: "125k – 150k" },
+  { value: "150-200", label: "150k – 200k" },
+  { value: "200-300", label: "200k – 300k" },
+  { value: "300-500", label: "300k – 500k" },
+];
+
+/* Workload / use case (multi-select, "custom" -> free text) */
+export const USE_CASES: Opt[] = [
+  { value: "study", label: "Study" },
+  { value: "graphic_design", label: "Graphic Design" },
+  { value: "video_editing", label: "Video Editing" },
+  { value: "data_entry", label: "Data Entry" },
+  { value: "ecommerce", label: "E-Commerce" },
+  { value: "web_dev", label: "Web Development" },
+  { value: "programming", label: "Programming" },
+  { value: "office_use", label: "Office Use" },
+  { value: "gaming", label: "Gaming" },
+  { value: "autocad_3d", label: "AutoCAD / 3D" },
+  { value: "trading", label: "Trading" },
+  { value: "custom", label: "Custom" },
+];
+
+/* Lost reason ("other" -> free text) */
+export const LOST_REASONS: Opt[] = [
+  { value: "budget_issue", label: "Budget Issue" },
+  { value: "model_not_available", label: "Model Not Available" },
+  { value: "price_high", label: "Price High" },
+  { value: "condition_issue", label: "Condition Issue" },
+  { value: "bought_elsewhere", label: "Bought Elsewhere" },
+  { value: "not_responding", label: "Not Responding" },
+  { value: "unknown", label: "Unknown" },
+  { value: "other", label: "Other" },
+];
+
+export const PROFESSION_LABELS = toMap(PROFESSIONS);
+export const BUDGET_LABELS = toMap(BUDGET_RANGES);
+export const USE_CASE_LABELS = toMap(USE_CASES);
+export const LOST_REASON_LABELS = toMap(LOST_REASONS);
+
+/* Display helpers */
+export function professionText(v?: string | null, other?: string | null) {
+  if (!v) return "";
+  return v === "other" ? other || "Other" : PROFESSION_LABELS[v] || v;
+}
+export function formatUseCases(csv?: string | null, custom?: string | null) {
+  if (!csv) return "";
+  return csv
+    .split(",")
+    .filter(Boolean)
+    .map((k) => (k === "custom" ? custom || "Custom" : USE_CASE_LABELS[k] || k))
+    .join(", ");
+}
+export function lostReasonText(v?: string | null, other?: string | null) {
+  if (!v) return "";
+  return v === "other" ? other || "Other" : LOST_REASON_LABELS[v] || v;
+}
