@@ -7,20 +7,33 @@ import {
   ensureLeadsTable,
   formatLeadNumber,
   nextLeadNumberBase,
+  parseLeadInput,
   phoneKey,
 } from "@/lib/leadsTable";
 import {
   mapHeaders,
+  matchBudget,
   matchCity,
+  matchLostReason,
   matchPriority,
+  matchProfession,
   matchSource,
   matchStatus,
-  parseAnyDate,
+  matchUseCases,
+  parseAnyDateTime,
   parseCSV,
   parseMoney,
 } from "@/lib/leadsIO";
 
 const MAX_ROWS = 5000;
+
+/* values for NOT NULL columns when a row didn't set them */
+const COL_DEFAULTS: Record<string, unknown> = {
+  status: "new",
+  priority: "medium",
+  estimated_value: 0,
+  follow_up_done: 0,
+};
 const MAX_BYTES = 10 * 1024 * 1024;
 
 type Cell = string | number | Date | null;
@@ -181,15 +194,12 @@ export async function POST(req: NextRequest) {
       for (const [idx, field] of Object.entries(headerMap)) {
         f[field] = cells[Number(idx)] ?? null;
       }
+      const warn = (message: string) => warnings.push({ row: rowNo, message });
 
-      let first = str(f.first_name, 120);
-      let last = str(f.last_name, 120);
-      if (!first && f.full_name) {
-        const parts = String(f.full_name).trim().split(/\s+/);
-        first = parts.shift()?.slice(0, 120) || null;
-        if (!last && parts.length) last = parts.join(" ").slice(0, 120);
-      }
-      if (!first) {
+      const name =
+        str(f.full_name, 240) ||
+        [str(f.first_name, 120), str(f.last_name, 120)].filter(Boolean).join(" ");
+      if (!name) {
         errors.push({ row: rowNo, message: "Name is missing" });
         return;
       }
@@ -199,70 +209,111 @@ export async function POST(req: NextRequest) {
       const alt = phoneStr(f.alternate_phone);
 
       if (skipDup) {
-        const keys = [phone, whatsapp, alt]
-          .map(phoneKey)
-          .filter((k) => k.length >= 7);
+        const keys = [phone, whatsapp, alt].map(phoneKey).filter((k) => k.length >= 7);
         if (keys.some((k) => existing.has(k))) {
           duplicates.push({
             row: rowNo,
-            message: `${first} ${last || ""} — duplicate number (already in CRM or repeated in file)`.trim(),
+            message: `${name} — duplicate number (already in CRM or repeated in file)`,
           });
           return;
         }
         keys.forEach((k) => existing.add(k)); // also catches duplicates inside file
       }
 
-      let source: string | null = null;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const body: Record<string, any> = {
+        name,
+        phone,
+        whatsapp: whatsapp || (f.whatsapp === undefined ? phone : null),
+        alternate_phone: alt,
+        email: str(f.email, 190),
+        company_name: str(f.company_name, 200),
+        designation: str(f.designation, 120),
+        requirement_note: str(f.requirement_note, 500),
+        follow_up_note: str(f.follow_up_note, 255),
+        address: str(f.address, 5000),
+        description: str(f.description, 10000),
+        delivery_name: str(f.delivery_name, 120),
+        delivery_phone: phoneStr(f.delivery_phone),
+        delivery_phone2: phoneStr(f.delivery_phone2),
+        delivery_house: str(f.delivery_house, 100),
+        delivery_street: str(f.delivery_street, 150),
+        delivery_area: str(f.delivery_area, 150),
+        delivery_landmark: str(f.delivery_landmark, 200),
+      };
+      const cityRaw = str(f.city, 100);
+      body.city = cityRaw ? matchCity(cityRaw) : null;
+      const dCity = str(f.delivery_city, 100);
+      body.delivery_city = dCity ? matchCity(dCity) : null;
+      if (f.estimated_value !== undefined) body.estimated_value = parseMoney(f.estimated_value);
+
       const srcRaw = str(f.source);
       if (srcRaw) {
-        source = matchSource(srcRaw);
-        if (!source) warnings.push({ row: rowNo, message: `Unknown source "${srcRaw}" — left empty` });
+        body.source = matchSource(srcRaw);
+        if (!body.source) warn(`Unknown source "${srcRaw}" — left empty`);
+      }
+      const profRaw = str(f.profession);
+      if (profRaw) {
+        const m = matchProfession(profRaw);
+        body.profession = m.profession;
+        body.profession_other = m.other;
+      }
+      const budRaw = str(f.budget_range);
+      if (budRaw) {
+        body.budget_range = matchBudget(f.budget_range);
+        if (!body.budget_range) warn(`Budget "${budRaw}" not understood — left empty`);
+      }
+      const ucRaw = str(f.use_cases, 500);
+      if (ucRaw) {
+        const m = matchUseCases(ucRaw);
+        body.use_cases = m.use_cases;
+        body.use_case_custom = m.custom;
       }
 
-      let status = "new";
+      body.status = "new";
       const stRaw = str(f.status);
       if (stRaw) {
         const m = matchStatus(stRaw);
-        if (m) status = m;
-        else warnings.push({ row: rowNo, message: `Unknown status "${stRaw}" — set to New` });
+        if (m) body.status = m;
+        else warn(`Unknown status "${stRaw}" — set to New`);
       }
-
-      let priority = "medium";
+      body.priority = "medium";
       const prRaw = str(f.priority);
       if (prRaw) {
         const m = matchPriority(prRaw);
-        if (m) priority = m;
-        else warnings.push({ row: rowNo, message: `Unknown priority "${prRaw}" — set to Medium` });
+        if (m) body.priority = m;
+        else warn(`Unknown priority "${prRaw}" — set to Medium`);
       }
 
-      let assignedTo: number | null = null;
+      const fuRaw = f.follow_up_at;
+      if (fuRaw !== undefined && fuRaw !== null && String(fuRaw).trim() !== "") {
+        body.follow_up_at = parseAnyDateTime(fuRaw);
+        if (!body.follow_up_at) warn(`Follow-up date "${fuRaw}" not understood — skipped`);
+      }
+      if (body.status === "follow_up" && !body.follow_up_at) {
+        body.status = "new";
+        warn("Status Follow Up without a date — set to New");
+      }
+      const lrRaw = str(f.lost_reason);
+      if (lrRaw) {
+        const m = matchLostReason(lrRaw);
+        body.lost_reason = m.lost_reason;
+        body.lost_reason_other = m.other;
+      }
+      if (body.status === "lost" && !body.lost_reason) body.lost_reason = "unknown";
+
       const asRaw = str(f.assigned);
       if (asRaw) {
-        assignedTo = userByKey.get(asRaw.toLowerCase()) ?? null;
-        if (!assignedTo) warnings.push({ row: rowNo, message: `User "${asRaw}" not found — left unassigned` });
+        body.assigned_to = userByKey.get(asRaw.toLowerCase()) ?? null;
+        if (!body.assigned_to) warn(`User "${asRaw}" not found — left unassigned`);
       }
 
-      const cityRaw = str(f.city, 100);
-
-      valid.push({
-        first_name: first,
-        last_name: last,
-        company_name: str(f.company_name, 200),
-        designation: str(f.designation, 120),
-        email: str(f.email, 190),
-        phone,
-        alternate_phone: alt,
-        whatsapp,
-        source,
-        city: cityRaw ? matchCity(cityRaw) : null,
-        assigned_to: assignedTo,
-        status,
-        priority,
-        estimated_value: parseMoney(f.estimated_value),
-        expected_close_date: parseAnyDate(f.expected_close_date),
-        address: str(f.address, 5000),
-        description: str(f.description, 10000),
-      });
+      const { values, error } = parseLeadInput(body, false);
+      if (error) {
+        errors.push({ row: rowNo, message: error });
+        return;
+      }
+      valid.push(values);
     });
 
     const summary = {
@@ -290,23 +341,16 @@ export async function POST(req: NextRequest) {
     try {
       await conn.beginTransaction();
       let n = await nextLeadNumberBase(conn, user.company_id);
-      const cols = [
-        "company_id", "branch_id", "lead_number", "first_name", "last_name",
-        "company_name", "designation", "email", "phone", "alternate_phone",
-        "whatsapp", "source", "city", "assigned_to", "status", "priority",
-        "estimated_value", "expected_close_date", "address", "description",
-        "created_by",
-      ];
+      const dataCols = Array.from(new Set(valid.flatMap((r) => Object.keys(r))));
+      const cols = ["company_id", "branch_id", "lead_number", "created_by", ...dataCols];
       for (let i = 0; i < valid.length; i += 500) {
         const chunk = valid.slice(i, i + 500);
         const values = chunk.map((r) => [
           user.company_id,
           user.branch_id ?? null,
           formatLeadNumber(++n),
-          r.first_name, r.last_name, r.company_name, r.designation, r.email,
-          r.phone, r.alternate_phone, r.whatsapp, r.source, r.city,
-          r.assigned_to, r.status, r.priority, r.estimated_value,
-          r.expected_close_date, r.address, r.description, user.id,
+          user.id,
+          ...dataCols.map((c) => (r[c] === undefined ? COL_DEFAULTS[c] ?? null : r[c])),
         ]);
         await conn.query(
           `INSERT INTO ${LEADS_TABLE} (${cols.join(", ")}) VALUES ?`,

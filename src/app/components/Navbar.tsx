@@ -97,6 +97,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: ICONS.crm,
     children: [
       { label: "Leads", href: "/leads" },
+      { label: "Follow Ups", href: "/leads/follow-ups" },
       { label: "Pipeline", href: "/leads/pipeline" },
       { label: "WhatsApp", href: "/whatsapp" },
       { label: "WhatsApp Settings", href: "/whatsapp/settings" },
