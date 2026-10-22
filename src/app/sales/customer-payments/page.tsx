@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import Navbar from "@/app/components/Navbar";
 import { formatCurrency, formatDate, prettyStatus } from "@/lib/format";
 
@@ -58,12 +59,14 @@ function PaymentsMain() {
 
   return (
     <main className={`min-h-screen bg-gray-50 pt-16 transition-[padding] duration-200 ease-out ${collapsed ? "lg:pl-[72px]" : "lg:pl-64"}`}>
-      <div className="mx-auto max-w-7xl p-4 sm:p-6 lg:p-8"><PaymentsContent /></div>
+      <div className="mx-auto max-w-7xl p-4 sm:p-6 lg:p-8"><Suspense fallback={null}><PaymentsContent /></Suspense></div>
     </main>
   );
 }
 
 function PaymentsContent() {
+  const sp = useSearchParams();
+  const preCustomer = sp.get("customer_id") || "";
   const [rows, setRows] = useState<PaymentRow[]>([]);
   const [customers, setCustomers] = useState<CustomerLite[]>([]);
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 50, total: 0, total_pages: 0 });
@@ -73,9 +76,9 @@ function PaymentsContent() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [methodFilter, setMethodFilter] = useState("");
-  const [customerFilter, setCustomerFilter] = useState("");
+  const [customerFilter, setCustomerFilter] = useState(preCustomer);
   const [page, setPage] = useState(1);
-  const [showModal, setShowModal] = useState(false);
+  const [showModal, setShowModal] = useState(sp.get("new") === "1");
   const [editing, setEditing] = useState<PaymentRow | null>(null);
 
   useEffect(() => {
@@ -146,11 +149,11 @@ function PaymentsContent() {
           <select value={methodFilter} onChange={(e) => setMethodFilter(e.target.value)}
             className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-[#17D65D]">
             <option value="">All methods</option>
-            <option value="cash">Cash</option>
             <option value="bank_transfer">Bank transfer</option>
+            <option value="cash">Cash</option>
             <option value="cheque">Cheque</option>
-            <option value="card">Card</option>
-            <option value="online">Online</option>
+            <option value="card">Card (POS machine)</option>
+            <option value="online">JazzCash / Easypaisa</option>
             <option value="other">Other</option>
           </select>
           <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
@@ -242,7 +245,7 @@ function PaymentsContent() {
       </div>
 
       {showModal && (
-        <PaymentModal payment={editing} customers={customers}
+        <PaymentModal payment={editing} customers={customers} defaultCustomerId={editing ? "" : customerFilter}
           onClose={() => setShowModal(false)} onSaved={() => { setShowModal(false); fetchRows(); }} />
       )}
     </div>
@@ -250,18 +253,19 @@ function PaymentsContent() {
 }
 
 function PaymentModal({
-  payment, customers, onClose, onSaved,
+  payment, customers, defaultCustomerId = "", onClose, onSaved,
 }: {
   payment: PaymentRow | null;
+  defaultCustomerId?: string;
   customers: CustomerLite[];
   onClose: () => void;
   onSaved: () => void;
 }) {
   const isEdit = !!payment;
-  const [customerId, setCustomerId] = useState(payment?.customer_id ? String(payment.customer_id) : "");
+  const [customerId, setCustomerId] = useState(payment?.customer_id ? String(payment.customer_id) : defaultCustomerId);
   const [paymentDate, setPaymentDate] = useState<string>(payment?.payment_date?.slice(0, 10) || new Date().toISOString().slice(0, 10));
   const [amount, setAmount] = useState(String(payment?.amount ?? 0));
-  const [method, setMethod] = useState(payment?.method || "cash");
+  const [method, setMethod] = useState(payment?.method || "bank_transfer");
   const [reference, setReference] = useState(payment?.reference || "");
   const [bankName, setBankName] = useState(payment?.bank_name || "");
   const [chequeNumber, setChequeNumber] = useState(payment?.cheque_number || "");
@@ -343,11 +347,11 @@ function PaymentModal({
               <div>
                 <label className="mb-1.5 block text-xs font-medium text-gray-700">Method</label>
                 <select value={method} onChange={(e) => setMethod(e.target.value as typeof method)} className={inputCls}>
-                  <option value="cash">Cash</option>
                   <option value="bank_transfer">Bank transfer</option>
+                  <option value="cash">Cash</option>
                   <option value="cheque">Cheque</option>
-                  <option value="card">Card</option>
-                  <option value="online">Online</option>
+                  <option value="card">Card (POS machine)</option>
+                  <option value="online">JazzCash / Easypaisa</option>
                   <option value="other">Other</option>
                 </select>
               </div>
