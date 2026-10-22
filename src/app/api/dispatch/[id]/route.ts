@@ -14,8 +14,10 @@ type Ctx = { params: Promise<{ id: string }> };
 /* ============================================================
    PUT /api/dispatch/:id
    { status?, courier?, tracking_no?, dispatch_notes? }
+   { review_rating?: 1-5|null, review_comment? }  -> completes the order
    Rules: shipped / delivered need an invoice first (bill from POS);
-          an invoiced order can't be cancelled here.
+          an invoiced order can't be cancelled here;
+          review only after delivery.
 ============================================================ */
 export async function PUT(req: NextRequest, { params }: Ctx) {
   try {
@@ -65,9 +67,44 @@ export async function PUT(req: NextRequest, { params }: Ctx) {
       if (s === "pending" && h.invoice_id) {
         return NextResponse.json({ error: "Order is already billed" }, { status: 400 });
       }
+      if (s === "completed" && h.status !== "delivered" && h.status !== "completed") {
+        return NextResponse.json({ error: "Mark the order delivered first" }, { status: 400 });
+      }
       newStatus = s;
       sets.push("status = ?");
       vals.push(s);
+      const now = new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 19).replace("T", " ");
+      if (s === "shipped") {
+        sets.push("shipped_at = ?");
+        vals.push(now);
+      }
+      if (s === "delivered") {
+        sets.push("delivered_at = ?");
+        vals.push(now);
+      }
+    }
+
+    /* review (after delivery) */
+    if (body.review_rating !== undefined || body.review_comment !== undefined) {
+      const st = newStatus || h.status;
+      if (st !== "delivered" && st !== "completed") {
+        return NextResponse.json({ error: "Review can be added after delivery" }, { status: 400 });
+      }
+      const r = body.review_rating === null || body.review_rating === "" ? null : Math.round(Number(body.review_rating));
+      if (r !== null && (!(r >= 1) || r > 5)) {
+        return NextResponse.json({ error: "Rating must be 1 to 5" }, { status: 400 });
+      }
+      sets.push("review_rating = ?", "review_comment = ?", "review_at = ?");
+      vals.push(
+        r,
+        cleanStr(body.review_comment, 1000),
+        new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 19).replace("T", " ")
+      );
+      if (!newStatus) {
+        newStatus = "completed";
+        sets.push("status = ?");
+        vals.push("completed");
+      }
     }
 
     if (sets.length) {
