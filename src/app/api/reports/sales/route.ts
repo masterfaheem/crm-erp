@@ -1,0 +1,141 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getPool } from "@/lib/db";
+import { requireUser, unauthorized } from "@/lib/requireUser";
+import { cleanDate } from "@/lib/leadsTable";
+import { HANDOVER_TABLE, ensureHandoverTable } from "@/lib/orderHandover";
+
+/* ============================================================
+   GET /api/reports/sales?from=YYYY-MM-DD&to=YYYY-MM-DD
+   Sales, profit, products, customers, receivables,
+   online-order operations and reviews.
+============================================================ */
+type Row = Record<string, unknown>;
+const toNum = (rows: Row[]) =>
+  rows.map((r) => {
+    const o: Row = {};
+    for (const [k, v] of Object.entries(r))
+      o[k] = typeof v === "string" && v !== "" && !isNaN(Number(v)) && k !== "k" && k !== "name" && k !== "code" ? Number(v) : v;
+    return o;
+  });
+
+export async function GET(req: NextRequest) {
+  try {
+    const user = await requireUser(req);
+    if (!user) return unauthorized();
+    await ensureHandoverTable();
+    const sp = new URL(req.url).searchParams;
+    const from = cleanDate(sp.get("from"));
+    const to = cleanDate(sp.get("to"));
+
+    const w: string[] = ["i.company_id = ?", "i.status <> 'cancelled'"];
+    const p: unknown[] = [user.company_id];
+    if (from) {
+      w.push("i.invoice_date >= ?");
+      p.push(from);
+    }
+    if (to) {
+      w.push("i.invoice_date <= ?");
+      p.push(to);
+    }
+    const W = w.join(" AND ");
+    const pool = getPool();
+    const q = async (sql: string, extra: unknown[] = []) =>
+      toNum((await pool.query(sql, [...p, ...extra]))[0] as Row[]);
+
+    const hw: string[] = ["h.company_id = ?"];
+    const hp: unknown[] = [user.company_id];
+    if (from) {
+      hw.push("DATE(h.created_at) >= ?");
+      hp.push(from);
+    }
+    if (to) {
+      hw.push("DATE(h.created_at) <= ?");
+      hp.push(to);
+    }
+    const HW = hw.join(" AND ");
+    const hq = async (sql: string) => toNum((await pool.query(sql, hp))[0] as Row[]);
+
+    const [
+      totals,
+      channel,
+      byDay,
+      topProducts,
+      topCustomers,
+      receivables,
+      ordersByStatus,
+      opsSpeed,
+      reviews,
+      advanceMethods,
+      byCityOnline,
+    ] = await Promise.all([
+      q(`SELECT COUNT(*) AS bills, COALESCE(SUM(i.grand_total),0) AS sales,
+                COALESCE(SUM(i.paid_amount),0) AS paid, COALESCE(SUM(i.balance),0) AS outstanding,
+                COALESCE(AVG(i.grand_total),0) AS avg_bill, COUNT(DISTINCT i.customer_id) AS customers
+           FROM invoices i WHERE ${W}`),
+      q(`SELECT CASE WHEN h.id IS NULL THEN 'walk_in' ELSE 'online' END AS k,
+                COUNT(*) AS bills, COALESCE(SUM(i.grand_total),0) AS sales
+           FROM invoices i LEFT JOIN ${HANDOVER_TABLE} h ON h.invoice_id = i.id
+          WHERE ${W} GROUP BY k`),
+      q(`SELECT DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS k, COUNT(*) AS bills, SUM(i.grand_total) AS sales
+           FROM invoices i WHERE ${W} GROUP BY k ORDER BY k`),
+      q(`SELECT COALESCE(p.name, ii.description, 'Item') AS name, p.sku AS code,
+                SUM(ii.quantity) AS qty, SUM(ii.line_total) AS revenue,
+                SUM(CASE WHEN p.id IS NOT NULL AND p.purchase_price > 0
+                         THEN ii.line_total - ii.quantity * p.purchase_price END) AS profit
+           FROM invoice_items ii
+           JOIN invoices i ON i.id = ii.invoice_id
+           LEFT JOIN products p ON p.id = ii.product_id
+          WHERE ${W}
+          GROUP BY COALESCE(ii.product_id, CONCAT('d:', ii.description)), name, code
+          ORDER BY revenue DESC LIMIT 15`),
+      q(`SELECT c.name AS name, c.customer_code AS code, COUNT(*) AS bills, SUM(i.grand_total) AS sales
+           FROM invoices i JOIN customers c ON c.id = i.customer_id
+          WHERE ${W} GROUP BY c.id, c.name, c.customer_code ORDER BY sales DESC LIMIT 10`),
+      q(`SELECT c.name AS name, c.customer_code AS code, COUNT(*) AS bills, SUM(i.balance) AS balance
+           FROM invoices i JOIN customers c ON c.id = i.customer_id
+          WHERE ${W} AND i.balance > 0 GROUP BY c.id, c.name, c.customer_code ORDER BY balance DESC LIMIT 10`),
+      hq(`SELECT h.status AS k, COUNT(*) AS n, COALESCE(SUM(h.total_amount),0) AS amount,
+                 COALESCE(SUM(h.cod_amount),0) AS cod
+            FROM ${HANDOVER_TABLE} h WHERE ${HW} GROUP BY h.status`),
+      hq(`SELECT AVG(TIMESTAMPDIFF(HOUR, h.created_at, h.shipped_at)) AS hours_to_ship,
+                 AVG(TIMESTAMPDIFF(HOUR, h.shipped_at, h.delivered_at)) AS hours_in_transit,
+                 AVG(TIMESTAMPDIFF(HOUR, h.created_at, h.delivered_at)) AS hours_total
+            FROM ${HANDOVER_TABLE} h WHERE ${HW}`),
+      hq(`SELECT h.review_rating AS k, COUNT(*) AS n FROM ${HANDOVER_TABLE} h
+           WHERE ${HW} AND h.review_rating IS NOT NULL GROUP BY h.review_rating ORDER BY k DESC`),
+      hq(`SELECT IFNULL(h.advance_method,'none') AS k, COUNT(*) AS n, COALESCE(SUM(h.advance_amount),0) AS amount
+            FROM ${HANDOVER_TABLE} h WHERE ${HW} GROUP BY k ORDER BY amount DESC`),
+      hq(`SELECT h.delivery_city AS k, COUNT(*) AS n, COALESCE(SUM(h.total_amount),0) AS amount
+            FROM ${HANDOVER_TABLE} h WHERE ${HW} GROUP BY k ORDER BY n DESC LIMIT 15`),
+    ]);
+
+    /* COD still to collect on billed online orders */
+    const [codRows] = await pool.query(
+      `SELECT COALESCE(SUM(i.balance),0) AS cod_due, COUNT(*) AS n
+         FROM ${HANDOVER_TABLE} h JOIN invoices i ON i.id = h.invoice_id
+        WHERE ${HW} AND i.balance > 0 AND i.status <> 'cancelled'`,
+      hp
+    );
+
+    return NextResponse.json({
+      data: {
+        range: { from, to },
+        totals: totals[0] || {},
+        channel,
+        by_day: byDay,
+        top_products: topProducts,
+        top_customers: topCustomers,
+        receivables,
+        orders_by_status: ordersByStatus,
+        ops_speed: opsSpeed[0] || {},
+        reviews,
+        advance_methods: advanceMethods,
+        online_by_city: byCityOnline,
+        cod_due: toNum(codRows as Row[])[0] || { cod_due: 0, n: 0 },
+      },
+    });
+  } catch (err) {
+    console.error("GET /api/reports/sales error:", err);
+    return NextResponse.json({ error: "Failed to build report" }, { status: 500 });
+  }
+}
