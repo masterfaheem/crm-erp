@@ -90,3 +90,22 @@ const RAW_CITIES = [
 export const PAKISTAN_CITIES: string[] = Array.from(new Set(RAW_CITIES)).sort(
   (a, b) => a.localeCompare(b)
 );
+
+/* Status & priority (value -> label) */
+export const LEAD_STATUS_LABELS: Record<string, string> = {
+  new: "New",
+  contacted: "Contacted",
+  qualified: "Qualified",
+  proposal: "Proposal",
+  negotiation: "Negotiation",
+  won: "Won",
+  lost: "Lost",
+  junk: "Junk",
+};
+
+export const LEAD_PRIORITY_LABELS: Record<string, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  urgent: "Urgent",
+};
