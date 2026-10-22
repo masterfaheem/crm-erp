@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import Navbar from "@/app/components/Navbar";
+import {
+  LEAD_SOURCES,
+  LEAD_SOURCE_GROUPS,
+  PAKISTAN_CITIES,
+} from "@/lib/leadOptions";
 
 /* ============================================================
    TYPES
@@ -35,16 +40,6 @@ interface Pagination {
   limit: number;
   total: number;
   total_pages: number;
-}
-
-interface Source {
-  id: number;
-  name: string;
-}
-
-interface City {
-  id: number;
-  name: string;
 }
 
 interface UserOption {
@@ -123,8 +118,6 @@ export default function LeadsPage() {
   const [page, setPage] = useState(1);
 
   const [showCreate, setShowCreate] = useState(false);
-  const [sources, setSources] = useState<Source[]>([]);
-  const [cities, setCities] = useState<City[]>([]);
   const [users, setUsers] = useState<UserOption[]>([]);
 
   const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -134,20 +127,9 @@ export default function LeadsPage() {
     let cancelled = false;
     (async () => {
       try {
-        const [sRes, cRes, uRes] = await Promise.all([
-          fetch("/api/lead-sources", { credentials: "include" }),
-          fetch("/api/cities", { credentials: "include" }),
-          fetch("/api/users", { credentials: "include" }),
-        ]);
+        // Sources & cities are fixed lists (see src/lib/leadOptions.ts)
+        const uRes = await fetch("/api/users", { credentials: "include" });
         if (cancelled) return;
-        if (sRes.ok) {
-          const j = await sRes.json();
-          setSources(j.data || []);
-        }
-        if (cRes.ok) {
-          const j = await cRes.json();
-          setCities(j.data || []);
-        }
         if (uRes.ok) {
           const j = await uRes.json();
           setUsers(j.data || []);
@@ -652,8 +634,6 @@ export default function LeadsPage() {
       {/* CREATE MODAL */}
       {showCreate && (
         <CreateLeadModal
-          sources={sources}
-          cities={cities}
           users={users}
           onClose={() => setShowCreate(false)}
           onCreated={() => {
@@ -718,14 +698,10 @@ function Field({
    CREATE LEAD MODAL
 ============================================================ */
 function CreateLeadModal({
-  sources,
-  cities,
   users,
   onClose,
   onCreated,
 }: {
-  sources: Source[];
-  cities: City[];
   users: UserOption[];
   onClose: () => void;
   onCreated: () => void;
@@ -739,8 +715,8 @@ function CreateLeadModal({
     alternate_phone: "",
     whatsapp: "",
     designation: "",
-    source_id: "",
-    city_id: "",
+    source: "",
+    city: "",
     assigned_to: "",
     status: "new",
     priority: "medium",
@@ -775,8 +751,11 @@ function CreateLeadModal({
         alternate_phone: form.alternate_phone.trim() || null,
         whatsapp: form.whatsapp.trim() || null,
         designation: form.designation.trim() || null,
-        source_id: form.source_id ? Number(form.source_id) : null,
-        city_id: form.city_id ? Number(form.city_id) : null,
+        source: form.source || null,
+        source_name:
+          LEAD_SOURCES.find((s) => s.value === form.source)?.label || null,
+        city: form.city || null,
+        city_name: form.city || null,
         assigned_to: form.assigned_to ? Number(form.assigned_to) : null,
         status: form.status,
         priority: form.priority,
@@ -908,32 +887,28 @@ function CreateLeadModal({
             </Field>
             <Field label="Source">
               <select
-                value={form.source_id}
-                onChange={(e) => set("source_id", e.target.value)}
+                value={form.source}
+                onChange={(e) => set("source", e.target.value)}
                 className={inputCls}
               >
                 <option value="">Select source</option>
-                {sources.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
+                {LEAD_SOURCE_GROUPS.map((g) => (
+                  <optgroup key={g} label={g}>
+                    {LEAD_SOURCES.filter((s) => s.group === g).map((s) => (
+                      <option key={s.value} value={s.value}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
             </Field>
 
             <Field label="City">
-              <select
-                value={form.city_id}
-                onChange={(e) => set("city_id", e.target.value)}
-                className={inputCls}
-              >
-                <option value="">Select city</option>
-                {cities.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
+              <CitySelect
+                value={form.city}
+                onChange={(v) => set("city", v)}
+              />
             </Field>
             <Field label="Assigned To">
               <select
@@ -1038,6 +1013,131 @@ function CreateLeadModal({
           </div>
         </form>
       </div>
+    </div>
+  );
+}
+/* ============================================================
+   SEARCHABLE CITY SELECT (all Pakistan cities)
+============================================================ */
+function CitySelect({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [highlight, setHighlight] = useState(0);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const filtered = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    if (!t) return PAKISTAN_CITIES;
+    const starts = PAKISTAN_CITIES.filter((c) => c.toLowerCase().startsWith(t));
+    const contains = PAKISTAN_CITIES.filter(
+      (c) => !c.toLowerCase().startsWith(t) && c.toLowerCase().includes(t)
+    );
+    return [...starts, ...contains];
+  }, [q]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDoc);
+    setTimeout(() => inputRef.current?.focus(), 0);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+
+  const pick = (c: string) => {
+    onChange(c);
+    setOpen(false);
+    setQ("");
+  };
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={`${inputCls} flex items-center justify-between text-left`}
+      >
+        <span className={value ? "text-gray-900" : "text-gray-500"}>
+          {value || "Select city"}
+        </span>
+        <svg className="h-4 w-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="absolute z-20 mt-1 w-full rounded-lg border border-gray-200 bg-white shadow-lg">
+          <div className="border-b border-gray-100 p-2">
+            <input
+              ref={inputRef}
+              type="text"
+              value={q}
+              onChange={(e) => {
+                setQ(e.target.value);
+                setHighlight(0);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setHighlight((h) => Math.min(h + 1, filtered.length - 1));
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setHighlight((h) => Math.max(h - 1, 0));
+                } else if (e.key === "Enter") {
+                  e.preventDefault();
+                  if (filtered[highlight]) pick(filtered[highlight]);
+                } else if (e.key === "Escape") {
+                  setOpen(false);
+                }
+              }}
+              placeholder="Search city..."
+              className="w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-sm outline-none focus:border-[#17D65D] focus:ring-2 focus:ring-[#17D65D]/20"
+            />
+          </div>
+          <ul className="max-h-60 overflow-y-auto py-1">
+            {value && (
+              <li>
+                <button
+                  type="button"
+                  onClick={() => pick("")}
+                  className="w-full px-3 py-1.5 text-left text-xs text-gray-500 hover:bg-gray-50"
+                >
+                  Clear selection
+                </button>
+              </li>
+            )}
+            {filtered.length === 0 ? (
+              <li className="px-3 py-2 text-sm text-gray-500">No city found</li>
+            ) : (
+              filtered.map((c, i) => (
+                <li key={c}>
+                  <button
+                    type="button"
+                    onMouseEnter={() => setHighlight(i)}
+                    onClick={() => pick(c)}
+                    className={`w-full px-3 py-1.5 text-left text-sm ${
+                      i === highlight ? "bg-[#17D65D]/10" : ""
+                    } ${c === value ? "font-semibold text-gray-900" : "text-gray-700"}`}
+                  >
+                    {c}
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
