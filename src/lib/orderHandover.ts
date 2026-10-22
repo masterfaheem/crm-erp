@@ -37,6 +37,11 @@ export async function ensureHandoverTable(): Promise<void> {
       dispatch_notes VARCHAR(1000) NULL,
       courier VARCHAR(60) NULL,
       tracking_no VARCHAR(100) NULL,
+      shipped_at DATETIME NULL,
+      delivered_at DATETIME NULL,
+      review_rating TINYINT NULL,
+      review_comment VARCHAR(1000) NULL,
+      review_at DATETIME NULL,
       created_by INT UNSIGNED NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -46,17 +51,34 @@ export async function ensureHandoverTable(): Promise<void> {
       KEY idx_customer (customer_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+  // columns added later (auto-added if missing)
+  const [cols] = await getPool().query(`SHOW COLUMNS FROM ${HANDOVER_TABLE}`);
+  const have = new Set((cols as { Field: string }[]).map((c) => c.Field));
+  const extra: [string, string][] = [
+    ["shipped_at", "DATETIME NULL"],
+    ["delivered_at", "DATETIME NULL"],
+    ["review_rating", "TINYINT NULL"],
+    ["review_comment", "VARCHAR(1000) NULL"],
+    ["review_at", "DATETIME NULL"],
+  ];
+  const missing = extra.filter(([c]) => !have.has(c));
+  if (missing.length) {
+    await getPool().query(
+      `ALTER TABLE ${HANDOVER_TABLE} ${missing.map(([c, d]) => `ADD COLUMN ${c} ${d}`).join(", ")}`
+    );
+  }
   ensured = true;
 }
 
-/* pending -> invoiced -> shipped -> delivered  (or cancelled) */
-export const DISPATCH_STATUSES = ["pending", "invoiced", "shipped", "delivered", "cancelled"];
+/* pending -> invoiced -> shipped -> delivered -> completed (review taken)  (or cancelled) */
+export const DISPATCH_STATUSES = ["pending", "invoiced", "shipped", "delivered", "completed", "cancelled"];
 /* matching sales_orders.status */
 export const SO_STATUS_FOR: Record<string, string> = {
   pending: "confirmed",
   invoiced: "processing",
   shipped: "shipped",
   delivered: "delivered",
+  completed: "delivered",
   cancelled: "cancelled",
 };
 
@@ -272,6 +294,8 @@ export async function nextSalesOrderNumber(
 export const HANDOVER_SELECT = `
   SELECT h.*,
          DATE_FORMAT(h.dispatch_date, '%Y-%m-%d') AS dispatch_day,
+         DATE_FORMAT(h.shipped_at, '%Y-%m-%d %H:%i') AS shipped_on,
+         DATE_FORMAT(h.delivered_at, '%Y-%m-%d %H:%i') AS delivered_on,
          so.order_number, so.status AS so_status, so.grand_total AS so_total, so.order_date,
          c.customer_code, c.name AS customer_name, c.phone AS customer_phone, c.whatsapp AS customer_whatsapp,
          l.lead_number, l.first_name AS lead_first_name, l.last_name AS lead_last_name,
