@@ -18,7 +18,7 @@ export default function LoginPage() {
     setError(null);
 
     if (!email.trim() || !password) {
-      setError("Enter your email and password to continue.");
+      setError("Enter your email / username / phone and password to continue.");
       return;
     }
 
@@ -30,7 +30,7 @@ export default function LoginPage() {
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
-          email: email.trim().toLowerCase(),
+          identifier: email.trim(),
           password,
         }),
       });
@@ -41,7 +41,7 @@ export default function LoginPage() {
         setError(
           (data as { message?: string; error?: string }).message ||
             (data as { error?: string }).error ||
-            "Invalid email or password."
+            "Wrong login details or password."
         );
         setIsSubmitting(false);
         return;
@@ -128,17 +128,18 @@ export default function LoginPage() {
           >
             <div className="flex flex-col gap-1.5">
               <label htmlFor="email" className="text-sm font-medium text-black">
-                Email
+                Email, username or phone
               </label>
               <input
                 id="email"
                 name="email"
-                type="email"
-                autoComplete="email"
+                type="text"
+                autoComplete="username"
+                autoCapitalize="none"
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
+                placeholder="you@example.com, username or 03xx…"
                 className="w-full rounded-lg border border-neutral-300 bg-white px-4 py-3 text-sm text-black outline-none transition focus:border-[#17D65D] focus:ring-2 focus:ring-[#17D65D]/30"
               />
             </div>
