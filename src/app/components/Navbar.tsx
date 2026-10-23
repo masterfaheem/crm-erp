@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
+import { allowed, pageNeed } from "@/lib/permissions";
+import { loadMe, canDo } from "@/app/components/useAccess";
 
 /* ============================================================
    TYPES
@@ -15,6 +17,8 @@ interface User {
   company_name?: string | null;
   branch_name?: string | null;
   role?: string | null;
+  is_super_admin?: boolean;
+  permissions?: string[];
 }
 
 interface NavChild {
@@ -299,10 +303,9 @@ export default function Navbar() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch("/api/auth/me", { credentials: "include" });
-        if (!res.ok) return;
-        const json = await res.json();
-        if (!cancelled) setUser(json);
+        const json = await loadMe();
+        if (!json) return;
+        if (!cancelled) setUser(json as User);
       } catch {
         /* silent */
       }
@@ -311,6 +314,22 @@ export default function Navbar() {
       cancelled = true;
     };
   }, []);
+
+  /* ---- Only show what this user is allowed to open ---- */
+  const navGroups = useMemo(() => {
+    if (!user) return NAV_GROUPS.filter((g) => g.href === "/dashboard");
+    const perms = user.permissions || [];
+    const admin = !!user.is_super_admin;
+    const ok = (href?: string) => !href || allowed(pageNeed(href) ?? ["*"], perms, admin);
+    const prune = (items?: NavChild[]): NavChild[] =>
+      (items || [])
+        .map((c) => ({ ...c, children: c.children ? prune(c.children) : undefined }))
+        .filter((c) => ok(c.href) || (c.children && c.children.length));
+    return NAV_GROUPS.map((g) => ({ ...g, children: g.children ? prune(g.children) : undefined })).filter((g) =>
+      g.href ? ok(g.href) : (g.children || []).length > 0
+    );
+  }, [user]);
+  const canPos = canDo(user, "sales.create");
 
   /* ---- Auto-open group based on current route ---- */
   useEffect(() => {
@@ -473,7 +492,7 @@ export default function Navbar() {
           )}
 
           <ul className="space-y-0.5">
-            {NAV_GROUPS.map((group) => {
+            {navGroups.map((group) => {
               const active = groupIsActive(group);
               const isOpen = openGroups.includes(group.label);
 
@@ -776,6 +795,7 @@ export default function Navbar() {
         </Link>
 
         {/* ============ POS BUTTON ============ */}
+        {canPos && (
         <Link
           href="/pos"
           prefetch
@@ -797,6 +817,7 @@ export default function Navbar() {
           </svg>
           <span className="hidden sm:inline">POS</span>
         </Link>
+        )}
 
         {/* ============ RIGHT SIDE ACTIONS ============ */}
         <div className="ml-auto flex shrink-0 items-center gap-1 sm:gap-1.5">
