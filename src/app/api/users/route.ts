@@ -1,39 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getPool } from "@/lib/db";
-import { verifySession, SESSION_COOKIE_NAME } from "@/lib/auth";
 import bcrypt from "bcryptjs";
+import { getPool } from "@/lib/db";
+import { can, requirePerm, invalidateAccess, ensureAccessSchema, USER_ACCESS_TABLE } from "@/lib/access";
+import {
+  audit,
+  findDuplicate,
+  isSystemRole,
+  parseUserInput,
+  roleExists,
+  saveUserAccess,
+  validateUser,
+} from "@/lib/usersAdmin";
 
 /* ============================================================
-   AUTH HELPER
-============================================================ */
-async function requireUser(req: NextRequest) {
-  const token = req.cookies.get(SESSION_COOKIE_NAME)?.value;
-  if (!token) return null;
-
-  const payload = verifySession(token);
-  if (!payload) return null;
-
-  const pool = getPool();
-  const [rows] = await pool.query(
-    `SELECT id, company_id, branch_id, name, email
-     FROM users
-     WHERE id = ? AND status = 'active'
-     LIMIT 1`,
-    [payload.userId]
-  );
-  const arr = rows as any[];
-  return arr.length ? arr[0] : null;
-}
-
-/* ============================================================
-   GET /api/users
-   List all users of the company with filters + primary role.
+   GET /api/users  — team list
+   People without users.view only get id + name (for "assign to" dropdowns)
 ============================================================ */
 export async function GET(req: NextRequest) {
+  const a = await requirePerm(req);
+  if (a instanceof Response) return a;
   try {
-    const authUser = await requireUser(req);
-    if (!authUser) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    await ensureAccessSchema();
+    const pool = getPool();
+
+    if (!can(a, "users.view", "users.manage")) {
+      const [rows] = await pool.query(
+        "SELECT id, name FROM users WHERE company_id = ? AND status = 'active' ORDER BY name",
+        [a.companyId]
+      );
+      return NextResponse.json({ data: rows });
     }
 
     const { searchParams } = new URL(req.url);
@@ -42,12 +37,9 @@ export async function GET(req: NextRequest) {
     const role = searchParams.get("role")?.trim() || "";
 
     const where: string[] = ["u.company_id = ?"];
-    const params: any[] = [authUser.company_id];
-
+    const params: (string | number)[] = [a.companyId];
     if (search) {
-      where.push(
-        `(u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ? OR u.username LIKE ?)`
-      );
+      where.push("(u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ? OR u.username LIKE ?)");
       const s = `%${search}%`;
       params.push(s, s, s, s);
     }
@@ -56,200 +48,78 @@ export async function GET(req: NextRequest) {
       params.push(status);
     }
     if (role) {
-      where.push(
-        `EXISTS (
-          SELECT 1 FROM user_roles ur
-          JOIN roles r ON r.id = ur.role_id
-          WHERE ur.user_id = u.id AND r.name = ?
-        )`
-      );
+      where.push("EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = u.id AND r.name = ?)");
       params.push(role);
     }
 
-    const pool = getPool();
     const [rows] = await pool.query(
-      `SELECT
-        u.id,
-        u.name,
-        u.email,
-        u.phone,
-        u.username,
-        u.avatar_path,
-        u.status,
-        u.last_login_at,
-        u.created_at,
-        b.name AS branch_name,
-        (
-          SELECT GROUP_CONCAT(r.name ORDER BY r.name SEPARATOR ', ')
-          FROM user_roles ur
-          JOIN roles r ON r.id = ur.role_id
-          WHERE ur.user_id = u.id
-        ) AS roles,
-        (
-          SELECT r.id FROM user_roles ur
-          JOIN roles r ON r.id = ur.role_id
-          WHERE ur.user_id = u.id
-          LIMIT 1
-        ) AS primary_role_id
-      FROM users u
-      LEFT JOIN branches b ON b.id = u.branch_id
-      WHERE ${where.join(" AND ")}
-      ORDER BY u.created_at DESC`,
+      `SELECT u.id, u.name, u.email, u.phone, u.username, u.avatar_path, u.status,
+              u.last_login_at, u.created_at, u.branch_id, b.name AS branch_name,
+              r.id AS primary_role_id, r.name AS roles, COALESCE(r.is_system_role, 0) AS is_super_admin,
+              COALESCE(ac.custom, 0) AS custom_access,
+              (SELECT COUNT(*) FROM crm_user_permissions up WHERE up.user_id = u.id) AS custom_count
+         FROM users u
+         LEFT JOIN branches b ON b.id = u.branch_id
+         LEFT JOIN roles r ON r.id = (SELECT ur.role_id FROM user_roles ur WHERE ur.user_id = u.id ORDER BY ur.role_id LIMIT 1)
+         LEFT JOIN ${USER_ACCESS_TABLE} ac ON ac.user_id = u.id
+        WHERE ${where.join(" AND ")}
+        ORDER BY u.status = 'active' DESC, u.created_at DESC`,
       params
     );
-
-    return NextResponse.json({ data: rows });
+    return NextResponse.json({ data: rows, me: a.userId, can_manage: can(a, "users.manage") });
   } catch (err) {
     console.error("GET /api/users error:", err);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
 /* ============================================================
-   POST /api/users
-   Body: {
-     name, email, password, phone?, username?,
-     branch_id?, role_id?, status?
-   }
+   POST /api/users — add a team member
+   Body: { name, email?, phone?, username?, password, role_id?, branch_id?,
+           status?, custom?: boolean, permissions?: string[] }
+   Login works with any of email / username / phone + password.
 ============================================================ */
 export async function POST(req: NextRequest) {
-  const pool = getPool();
-  const conn = await pool.getConnection();
+  const a = await requirePerm(req, "users.manage");
+  if (a instanceof Response) return a;
 
+  const conn = await getPool().getConnection();
   try {
-    const authUser = await requireUser(req);
-    if (!authUser) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const body = await req.json();
-
-    const name = String(body.name || "").trim();
-    const email = String(body.email || "").trim().toLowerCase();
-    const password = String(body.password || "");
-    const phone = body.phone ? String(body.phone).trim() : null;
-    const username = body.username ? String(body.username).trim() : null;
-
-    /* ---- Validation ---- */
-    if (!name || !email || !password) {
-      return NextResponse.json(
-        { error: "Name, email, and password are required" },
-        { status: 400 }
-      );
-    }
-    if (password.length < 8) {
-      return NextResponse.json(
-        { error: "Password must be at least 8 characters" },
-        { status: 400 }
-      );
-    }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return NextResponse.json(
-        { error: "Please enter a valid email address" },
-        { status: 400 }
-      );
-    }
-
-    /* ---- Duplicate email check (within company) ---- */
-    const [dup] = await conn.query(
-      `SELECT id FROM users
-       WHERE company_id = ? AND LOWER(email) = ? LIMIT 1`,
-      [authUser.company_id, email]
-    );
-    if ((dup as any[]).length) {
-      return NextResponse.json(
-        { error: "A user with this email already exists" },
-        { status: 409 }
-      );
-    }
-
-    /* ---- Duplicate username check (within company, if provided) ---- */
-    if (username) {
-      const [dupU] = await conn.query(
-        `SELECT id FROM users
-         WHERE company_id = ? AND username = ? LIMIT 1`,
-        [authUser.company_id, username]
-      );
-      if ((dupU as any[]).length) {
-        return NextResponse.json(
-          { error: "This username is already taken" },
-          { status: 409 }
-        );
-      }
-    }
+    await ensureAccessSchema();
+    const u = parseUserInput(await req.json().catch(() => ({})));
+    const bad = validateUser(u, true);
+    if (bad) return NextResponse.json({ error: bad }, { status: 400 });
+    if (u.role_id && !(await roleExists(conn, u.role_id, a.companyId)))
+      return NextResponse.json({ error: "Role not found" }, { status: 400 });
+    if (!u.role_id && !u.custom)
+      return NextResponse.json({ error: "Choose a role or tick custom permissions" }, { status: 400 });
+    if (!a.isSuperAdmin && (await isSystemRole(conn, u.role_id, a.companyId)))
+      return NextResponse.json({ error: "Only a Super Admin can create another Super Admin" }, { status: 403 });
+    const dup = await findDuplicate(conn, u, null);
+    if (dup) return NextResponse.json({ error: dup }, { status: 409 });
 
     await conn.beginTransaction();
-
-    /* ---- Hash password + insert ---- */
-    const passwordHash = await bcrypt.hash(password, 10);
-
-    const [result] = await conn.query(
-      `INSERT INTO users
-        (company_id, branch_id, name, email, phone, username, password_hash, status)
+    const hash = await bcrypt.hash(u.password, 10);
+    const [res] = await conn.query(
+      `INSERT INTO users (company_id, branch_id, name, email, phone, username, password_hash, status)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        authUser.company_id,
-        body.branch_id ? Number(body.branch_id) : authUser.branch_id || null,
-        name,
-        email,
-        phone,
-        username,
-        passwordHash,
-        body.status || "active",
-      ]
+      [a.companyId, u.branch_id ?? a.branchId ?? null, u.name, u.email, u.phone, u.username, hash, u.status]
     );
-    const newUserId = (result as any).insertId as number;
-
-    /* ---- Assign role (single-role model) ---- */
-    if (body.role_id) {
-      await conn.query(
-        `INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)`,
-        [newUserId, Number(body.role_id)]
-      );
-    }
-
-    /* ---- Audit log (best-effort) ---- */
-    try {
-      const ip =
-        req.headers.get("x-forwarded-for")?.split(",")[0].trim() ||
-        req.headers.get("x-real-ip") ||
-        null;
-      const ua = req.headers.get("user-agent") || null;
-
-      await conn.query(
-        `INSERT INTO audit_logs
-           (company_id, user_id, action, entity_type, entity_id, new_values, ip_address, user_agent)
-         VALUES (?, ?, 'create', 'user', ?, ?, ?, ?)`,
-        [
-          authUser.company_id,
-          authUser.id,
-          newUserId,
-          JSON.stringify({ name, email, status: body.status || "active" }),
-          ip,
-          ua ? ua.slice(0, 500) : null,
-        ]
-      );
-    } catch {
-      /* audit failure shouldn't block user creation */
-    }
-
+    const id = (res as { insertId: number }).insertId;
+    await saveUserAccess(conn, id, u, a.userId);
+    await audit(conn, a.companyId, a.userId, "create", id, {
+      name: u.name, email: u.email, phone: u.phone, username: u.username, role_id: u.role_id,
+      custom: u.custom, permissions: u.custom ? u.permissions : undefined,
+    }, req);
     await conn.commit();
-
-    return NextResponse.json(
-      { message: "User created successfully", id: newUserId },
-      { status: 201 }
-    );
+    invalidateAccess(id);
+    return NextResponse.json({ message: "User created", id }, { status: 201 });
   } catch (err) {
-    await conn.rollback();
+    try { await conn.rollback(); } catch {}
     console.error("POST /api/users error:", err);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   } finally {
     conn.release();
   }
 }
+
