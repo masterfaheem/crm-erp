@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useAccess } from "@/app/components/useAccess";
 import Link from "next/link";
 import {
   BUDGET_RANGES,
@@ -208,6 +209,7 @@ export function LeadFormFields({
   users: { id: number; name: string }[];
   excludeId?: number;
 }) {
+  const { can } = useAccess();
   const [showFollowUp, setShowFollowUp] = useState(!!form.follow_up_at);
   const set = <K extends keyof LeadFormState>(k: K, v: LeadFormState[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
@@ -455,8 +457,9 @@ export function LeadFormFields({
         <CitySelect value={form.delivery_city} onChange={(v) => set("delivery_city", v)} />
       </Field>
 
-      {/* -------- ASSIGN -------- */}
-      <Section title="👤 Assign" />
+      {/* -------- ASSIGN (needs "Assign leads") -------- */}
+      {can("leads.assign") && <Section title="👤 Assign" />}
+      {can("leads.assign") && (
       <Field label="Assigned To">
         <select value={form.assigned_to} onChange={(e) => set("assigned_to", e.target.value)} className={inputCls}>
           <option value="">Unassigned</option>
@@ -465,6 +468,7 @@ export function LeadFormFields({
           ))}
         </select>
       </Field>
+      )}
     </div>
   );
 }

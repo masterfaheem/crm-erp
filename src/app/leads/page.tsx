@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useAccess } from "@/app/components/useAccess";
 import Link from "next/link";
 import Navbar from "@/app/components/Navbar";
 import {
@@ -159,6 +160,7 @@ function buildQuery(search: string, f: Filters): string {
    PAGE
 ============================================================ */
 export default function LeadsPage() {
+  const { can } = useAccess();
   const [leads, setLeads] = useState<LeadRow[]>([]);
   const [pagination, setPagination] = useState<Pagination>({
     page: 1,
@@ -331,6 +333,7 @@ export default function LeadsPage() {
                   </span>
                 )}
               </Link>
+              {can("leads.import") && (
               <button
                 onClick={() => setShowImport(true)}
                 className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 shadow-sm transition hover:bg-gray-50"
@@ -340,7 +343,9 @@ export default function LeadsPage() {
                 </svg>
                 Import
               </button>
-              <ExportMenu query={exportQuery} />
+              )}
+              {can("leads.export") && <ExportMenu query={exportQuery} />}
+              {can("leads.create") && (
               <button
                 onClick={() => setShowCreate(true)}
                 className="inline-flex items-center gap-2 rounded-lg bg-[#17D65D] px-4 py-2 text-sm font-semibold text-black shadow-sm transition hover:bg-[#15c455] active:scale-[0.98]"
@@ -360,6 +365,7 @@ export default function LeadsPage() {
                 </svg>
                 New Lead
               </button>
+              )}
               </div>
             </div>
 
@@ -862,6 +868,7 @@ export default function LeadsPage() {
                                     />
                                   </svg>
                                 </Link>
+                                {can("leads.delete") && (
                                 <button
                                   onClick={() => handleDelete(lead.id, fullName)}
                                   className="rounded-lg p-1.5 text-gray-500 transition hover:bg-red-50 hover:text-red-600"
@@ -881,6 +888,7 @@ export default function LeadsPage() {
                                     />
                                   </svg>
                                 </button>
+                                )}
                               </div>
                             </td>
                           </tr>
