@@ -1,20 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
+import { accessFromRequest, can } from "@/lib/access";
 import {
   LEADS_TABLE,
   LEAD_SELECT,
   ensureLeadsTable,
   mapLeadRow,
+  ownerSql,
   parseLeadInput,
 } from "@/lib/leadsTable";
 
+/* null = may see every lead; otherwise only own (assigned / added) leads */
+async function ownerFor(req: NextRequest, userId: number) {
+  return can(await accessFromRequest(req), "leads.view_all") ? null : userId;
+}
+
 type Ctx = { params: Promise<{ id: string }> };
 
-async function loadLead(id: number, companyId: number) {
+async function loadLead(id: number, companyId: number, ownerId: number | null = null) {
+  const own = ownerSql(ownerId);
   const [rows] = await getPool().query(
-    `${LEAD_SELECT} WHERE l.id = ? AND l.company_id = ? LIMIT 1`,
-    [id, companyId]
+    `${LEAD_SELECT} WHERE l.id = ? AND l.company_id = ?${own.sql} LIMIT 1`,
+    [id, companyId, ...own.params]
   );
   const arr = rows as Record<string, unknown>[];
   return arr.length ? arr[0] : null;
@@ -27,7 +35,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
     if (!user) return unauthorized();
     await ensureLeadsTable();
     const id = Number((await params).id);
-    const lead = id ? await loadLead(id, user.company_id) : null;
+    const lead = id ? await loadLead(id, user.company_id, await ownerFor(req, user.id)) : null;
     if (!lead) {
       return NextResponse.json({ error: "Lead not found" }, { status: 404 });
     }
@@ -45,12 +53,14 @@ export async function PUT(req: NextRequest, { params }: Ctx) {
     if (!user) return unauthorized();
     await ensureLeadsTable();
     const id = Number((await params).id);
-    const existing = id ? await loadLead(id, user.company_id) : null;
+    const existing = id ? await loadLead(id, user.company_id, await ownerFor(req, user.id)) : null;
     if (!existing) {
       return NextResponse.json({ error: "Lead not found" }, { status: 404 });
     }
 
     const body = await req.json().catch(() => ({}));
+    // only people with "assign leads" can move a lead to someone else
+    if (!can(await accessFromRequest(req), "leads.assign")) delete body.assigned_to;
     const { values, error } = parseLeadInput(body, true, existing);
     if (error) {
       return NextResponse.json({ error }, { status: 400 });
@@ -89,7 +99,10 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
     if (!user) return unauthorized();
     await ensureLeadsTable();
     const id = Number((await params).id);
-    const lead = id ? await loadLead(id, user.company_id) : null;
+    const lead = id ? await loadLead(id, user.company_id, await ownerFor(req, user.id)) : null;
+    if (!lead) {
+      return NextResponse.json({ error: "Lead not found" }, { status: 404 });
+    }
     if (lead?.handover_id) {
       return NextResponse.json(
         { error: `This lead has order ${lead.order_number} — it can't be deleted` },
