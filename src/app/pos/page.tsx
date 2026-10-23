@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Navbar from "@/app/components/Navbar";
+import { useAccess } from "@/app/components/useAccess";
 import { OrderBoard, type Order as BoardOrder } from "@/app/dispatch/OrderBoard";
 
 /* ============================================================
@@ -200,6 +201,7 @@ function POSMain() {
    CONTENT
 ============================================================ */
 function POSContent() {
+  const { can } = useAccess();
   /* ---------- Customer state ---------- */
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(
     null
@@ -908,7 +910,8 @@ function POSContent() {
                     muted
                   />
 
-                  {/* Order discount input */}
+                  {/* Order discount input (needs "Give discount" permission) */}
+                  {can("sales.discount") && (
                   <div className="flex items-center justify-between gap-2 text-xs">
                     <span className="text-gray-500">Order discount %</span>
                     <input
@@ -923,6 +926,7 @@ function POSContent() {
                       className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-right text-xs outline-none focus:border-[#17D65D]"
                     />
                   </div>
+                  )}
                   {totals.orderDiscountAmt > 0 && (
                     <Row
                       label="Order discount"
@@ -1159,6 +1163,7 @@ function CustomerCard({ customer }: { customer: Customer }) {
             )}
           </div>
         </div>
+        {customer.current_balance !== null && customer.current_balance !== undefined && (
         <div className="shrink-0 text-right">
           <div className="text-[10px] uppercase tracking-wide text-gray-400">
             {balanceLabel}
@@ -1170,6 +1175,7 @@ function CustomerCard({ customer }: { customer: Customer }) {
             )}
           </div>
         </div>
+        )}
       </div>
     </div>
   );
@@ -1426,6 +1432,7 @@ function CustomerSearch({
                         </div>
                       </div>
                     </div>
+                    {c.current_balance !== null && c.current_balance !== undefined && (
                     <div className="shrink-0 text-right">
                       <div className="text-[10px] uppercase tracking-wide text-gray-400">
                         {Number(c.current_balance) > 0 ? "Due" : Number(c.current_balance) < 0 ? "Advance" : "Clear"}
@@ -1443,6 +1450,7 @@ function CustomerSearch({
                         )}
                       </div>
                     </div>
+                    )}
                   </button>
                 </li>
               ))}
