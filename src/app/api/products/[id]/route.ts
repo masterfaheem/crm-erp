@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
+import { accessFromRequest, can } from "@/lib/access";
 import { ensureStockTable, STOCK_SQL } from "@/lib/ledger";
 
 /* ============================================================
@@ -43,7 +44,16 @@ export async function PUT(
         : "active";
     const notes = body.notes ? String(body.notes).trim() : null;
 
-    const purchase_price = Number(body.purchase_price) || 0;
+    const showCost = can(await accessFromRequest(req), "products.cost");
+    let purchase_price = Number(body.purchase_price) || 0;
+    if (!showCost) {
+      // can't see cost -> keep the saved cost price untouched
+      const [cur] = await query<Array<{ purchase_price: number }>>(
+        "SELECT purchase_price FROM products WHERE id = ? AND company_id = ?",
+        [id, companyId]
+      );
+      purchase_price = Number(cur?.purchase_price) || 0;
+    }
     const sale_price = Number(body.sale_price) || 0;
     const wholesale_price = Number(body.wholesale_price) || 0;
     const tax_rate = Number(body.tax_rate) || 0;
@@ -170,7 +180,7 @@ export async function PUT(
       [id, companyId]
     );
 
-    return NextResponse.json({ data: row });
+    return NextResponse.json({ data: showCost ? row : { ...(row as Record<string, unknown>), purchase_price: null } });
   } catch (err) {
     console.error("[PUT /api/products/:id]", err);
     return NextResponse.json(
