@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import ExcelJS from "exceljs";
 import { getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
+import { accessFromRequest, can } from "@/lib/access";
 import {
   LEAD_SELECT,
   buildLeadFilters,
@@ -64,7 +65,8 @@ export async function GET(req: NextRequest) {
         },
       ];
     } else {
-      const { whereSql, params } = buildLeadFilters(sp, user.company_id);
+      const ownerId = can(await accessFromRequest(req), "leads.view_all") ? null : user.id;
+      const { whereSql, params } = buildLeadFilters(sp, user.company_id, ownerId);
       const [dbRows] = await getPool().query(
         `${LEAD_SELECT} WHERE ${whereSql} ORDER BY l.id DESC LIMIT ?`,
         [...params, MAX_EXPORT],
