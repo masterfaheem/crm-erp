@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
+import { accessFromRequest, can } from "@/lib/access";
 import { ensureStockTable, STOCK_SQL, STOCK_TABLE } from "@/lib/ledger";
 
 /* Live stock = opening stock + purchases − sales ± adjustments */
@@ -89,18 +90,21 @@ export async function GET(req: NextRequest) {
     );
 
     const num = (v: unknown) => Number(v) || 0;
+    const showCost = can(await accessFromRequest(req), "products.cost");
     return NextResponse.json({
+      can_see_cost: showCost,
       data: rows.map((r) => ({
         ...r,
+        purchase_price: showCost ? r.purchase_price : null,
         current_stock: num(r.current_stock),
-        stock_value: num(r.stock_value),
+        stock_value: showCost ? num(r.stock_value) : null,
         track_inventory: num(r.track_inventory ?? 1) === 1,
       })),
       pagination: { page, limit, total: num(total), total_pages: Math.ceil(num(total) / limit) || 0 },
       kpis: {
         total_products: num(k?.total_products),
         total_stock_qty: num(k?.total_stock_qty),
-        total_stock_value: num(k?.total_stock_value),
+        total_stock_value: showCost ? num(k?.total_stock_value) : null,
         low_stock_count: num(k?.low_stock_count),
         out_of_stock_count: num(k?.out_of_stock_count),
         healthy_count: num(k?.healthy_count),
