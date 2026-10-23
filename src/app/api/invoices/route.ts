@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { query, getPool } from "@/lib/db";
 import { ensureLedgerReady } from "@/lib/ledgerSetup";
 import { requireUser, unauthorized } from "@/lib/requireUser";
+import { accessFromRequest, can } from "@/lib/access";
 import { addCustomerPayment, ensureStockTable, recalcInvoice, syncDocStock, nextDocNumber } from "@/lib/ledger";
 
 async function nextInvoiceNumber(companyId: number): Promise<string> {
@@ -92,9 +93,26 @@ export async function POST(req: NextRequest) {
       quantity: number; unit_price: number; tax_rate: number; discount_percent: number;
     }> = Array.isArray(body.items) ? body.items : [];
 
-    if (!customer_id) return NextResponse.json({ error: "Customer is required." }, { status: 400 });
-    if (!invoice_date) return NextResponse.json({ error: "Invoice date is required." }, { status: 400 });
-    if (!items.length) return NextResponse.json({ error: "At least one line item is required." }, { status: 400 });
+    if (!customer_id) { conn.release(); return NextResponse.json({ error: "Customer is required." }, { status: 400 }); }
+    if (!invoice_date) { conn.release(); return NextResponse.json({ error: "Invoice date is required." }, { status: 400 }); }
+    if (!items.length) { conn.release(); return NextResponse.json({ error: "At least one line item is required." }, { status: 400 }); }
+
+    /* discount needs permission */
+    let givesDiscount = (Number(body.order_discount_amount) || 0) > 0;
+    const discItems = items.filter((it) => (Number(it.discount_percent) || 0) > 0);
+    if (!givesDiscount && discItems.length) {
+      // a product's own default discount is fine; anything above it is a manual discount
+      const ids = discItems.map((it) => Number(it.product_id)).filter(Boolean);
+      const [prows] = ids.length
+        ? await conn.query("SELECT id, discount_percent FROM products WHERE company_id = ? AND id IN (?)", [companyId, ids])
+        : [[]];
+      const def = new Map((prows as { id: number; discount_percent: number }[]).map((p) => [Number(p.id), Number(p.discount_percent) || 0]));
+      givesDiscount = discItems.some((it) => (Number(it.discount_percent) || 0) > (def.get(Number(it.product_id)) ?? 0) + 0.001);
+    }
+    if (givesDiscount && !can(await accessFromRequest(req), "sales.discount")) {
+      conn.release();
+      return NextResponse.json({ error: "You don't have permission to give discount. Ask your manager." }, { status: 403 });
+    }
 
     let subtotal = 0, tax_total = 0, discount_total = 0, grand_total = 0;
     const prepared = items.map((it) => {
