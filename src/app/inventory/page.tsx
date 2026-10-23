@@ -104,6 +104,11 @@ function formatNumber(n: number): string {
   });
 }
 
+/* cost / value is hidden (null) for users without "see cost price" */
+function money(v: number | null | undefined): string {
+  return v === null || v === undefined ? "🔒" : formatCurrency(v);
+}
+
 function getHealth(row: StockRow): StockHealth {
   if (!row.track_inventory) return "untracked";
   const stock = Number(row.current_stock) || 0;
@@ -377,7 +382,7 @@ function InventoryContent() {
         />
         <KpiCard
           label="Stock value"
-          value={formatCurrency(derivedKpis.total_stock_value)}
+          value={money(derivedKpis.total_stock_value)}
           hint={`${formatNumber(derivedKpis.total_stock_qty)} total units`}
           accent="green"
           icon={
@@ -775,10 +780,10 @@ function StockTable({ rows, onOpen }: { rows: StockRow[]; onOpen: OpenFn }) {
                       : "—"}
                   </td>
                   <td className="hidden whitespace-nowrap px-4 py-3.5 text-right text-xs text-gray-600 xl:table-cell">
-                    {formatCurrency(r.purchase_price)}
+                    {money(r.purchase_price)}
                   </td>
                   <td className="whitespace-nowrap px-4 py-3.5 text-right text-sm font-semibold text-gray-900">
-                    {formatCurrency(r.stock_value)}
+                    {money(r.stock_value)}
                   </td>
                   <td className="whitespace-nowrap px-4 py-3.5">
                     <span
@@ -893,7 +898,7 @@ function StockCards({ rows, onOpen }: { rows: StockRow[]; onOpen: OpenFn }) {
                   Value
                 </div>
                 <div className="text-sm font-semibold text-gray-900">
-                  {formatCurrency(r.stock_value)}
+                  {money(r.stock_value)}
                 </div>
               </div>
             </div>
