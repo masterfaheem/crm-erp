@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
-import { LEADS_TABLE, cleanDate, cleanStr, ensureLeadsTable } from "@/lib/leadsTable";
+import { accessFromRequest, can } from "@/lib/access";
+import { LEADS_TABLE, cleanDate, cleanStr, ensureLeadsTable, ownerSql } from "@/lib/leadsTable";
 import {
   HANDOVER_TABLE,
   PAYMENT_METHODS,
@@ -27,12 +28,13 @@ export async function GET(req: NextRequest, { params }: Ctx) {
     if (!user) return unauthorized();
     await ensureLeadsTable();
     await ensureHandoverTable();
+    const own = ownerSql(can(await accessFromRequest(req), "leads.view_all") ? null : user.id);
     const id = Number((await params).id);
     const pool = getPool();
 
     const [lr] = await pool.query(
-      `SELECT * FROM ${LEADS_TABLE} WHERE id = ? AND company_id = ? LIMIT 1`,
-      [id, user.company_id]
+      `SELECT * FROM ${LEADS_TABLE} l WHERE l.id = ? AND l.company_id = ?${own.sql} LIMIT 1`,
+      [id, user.company_id, ...own.params]
     );
     const lead = (lr as Record<string, unknown>[])[0];
     if (!lead) return NextResponse.json({ error: "Lead not found" }, { status: 404 });
@@ -70,6 +72,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   if (!user) return unauthorized();
   await ensureLeadsTable();
   await ensureHandoverTable();
+  const own = ownerSql(can(await accessFromRequest(req), "leads.view_all") ? null : user.id);
   const id = Number((await params).id);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const body: any = await req.json().catch(() => ({}));
@@ -137,8 +140,8 @@ export async function POST(req: NextRequest, { params }: Ctx) {
 
     /* lock the lead so two clicks can't convert it twice */
     const [lr] = await conn.query(
-      `SELECT * FROM ${LEADS_TABLE} WHERE id = ? AND company_id = ? FOR UPDATE`,
-      [id, user.company_id]
+      `SELECT * FROM ${LEADS_TABLE} l WHERE l.id = ? AND l.company_id = ?${own.sql} FOR UPDATE`,
+      [id, user.company_id, ...own.params]
     );
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const lead = (lr as any[])[0];
