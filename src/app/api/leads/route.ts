@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
+import { accessFromRequest, can } from "@/lib/access";
 import {
   LEADS_TABLE,
   LEAD_SELECT,
@@ -30,7 +31,9 @@ export async function GET(req: NextRequest) {
     );
     const offset = (page - 1) * limit;
 
-    const { whereSql, params } = buildLeadFilters(sp, user.company_id);
+    const access = await accessFromRequest(req);
+    const ownerId = can(access, "leads.view_all") ? null : user.id;
+    const { whereSql, params } = buildLeadFilters(sp, user.company_id, ownerId);
     const fu = sp.get("follow_up") || "";
     const orderSql =
       fu === "done"
@@ -79,6 +82,10 @@ export async function POST(req: NextRequest) {
     const { values, error } = parseLeadInput(body, false);
     if (error) {
       return NextResponse.json({ error }, { status: 400 });
+    }
+    // without "assign leads" a new lead is always the user's own
+    if (!can(await accessFromRequest(req), "leads.assign")) {
+      values.assigned_to = user.id;
     }
 
     const pool = getPool();

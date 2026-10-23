@@ -1,289 +1,154 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getPool } from "@/lib/db";
-import { verifySession, SESSION_COOKIE_NAME } from "@/lib/auth";
 import bcrypt from "bcryptjs";
+import { getPool } from "@/lib/db";
+import { requirePerm, invalidateAccess, ensureAccessSchema, USER_ACCESS_TABLE, USER_PERMS_TABLE } from "@/lib/access";
+import {
+  activeSuperAdmins,
+  audit,
+  findDuplicate,
+  isSystemRole,
+  parseUserInput,
+  roleExists,
+  saveUserAccess,
+  validateUser,
+} from "@/lib/usersAdmin";
 
-/* ============================================================
-   AUTH HELPER
-============================================================ */
-async function requireUser(req: NextRequest) {
-  const token = req.cookies.get(SESSION_COOKIE_NAME)?.value;
-  if (!token) return null;
+type Ctx = { params: Promise<{ id: string }> };
 
-  const payload = verifySession(token);
-  if (!payload) return null;
-
-  const pool = getPool();
-  const [rows] = await pool.query(
-    `SELECT id, company_id, branch_id, name, email
-     FROM users
-     WHERE id = ? AND status = 'active'
-     LIMIT 1`,
-    [payload.userId]
-  );
-  const arr = rows as any[];
-  return arr.length ? arr[0] : null;
-}
-
-/* ============================================================
-   GET /api/users/[id]
-   Returns the user row + primary role id.
-============================================================ */
-export async function GET(
-  req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+/* GET /api/users/[id] — user + role + custom ticks */
+export async function GET(req: NextRequest, { params }: Ctx) {
+  const a = await requirePerm(req, "users.view", "users.manage");
+  if (a instanceof Response) return a;
   try {
-    const { id } = await params;
-    const user = await requireUser(req);
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
+    await ensureAccessSchema();
+    const id = Number((await params).id);
     const pool = getPool();
-
     const [rows] = await pool.query(
-      `SELECT
-        u.id,
-        u.name,
-        u.email,
-        u.phone,
-        u.username,
-        u.avatar_path,
-        u.branch_id,
-        u.status,
-        u.last_login_at,
-        u.created_at,
-        (
-          SELECT r.id
-          FROM user_roles ur
-          JOIN roles r ON r.id = ur.role_id
-          WHERE ur.user_id = u.id
-          LIMIT 1
-        ) AS role_id
-       FROM users u
-       WHERE u.id = ? AND u.company_id = ?
-       LIMIT 1`,
-      [id, user.company_id]
+      `SELECT u.id, u.name, u.email, u.phone, u.username, u.avatar_path, u.branch_id, u.status,
+              u.last_login_at, u.created_at,
+              (SELECT ur.role_id FROM user_roles ur WHERE ur.user_id = u.id ORDER BY ur.role_id LIMIT 1) AS role_id,
+              COALESCE(ac.custom, 0) AS custom
+         FROM users u
+         LEFT JOIN ${USER_ACCESS_TABLE} ac ON ac.user_id = u.id
+        WHERE u.id = ? AND u.company_id = ?
+        LIMIT 1`,
+      [id, a.companyId]
     );
-
-    const row = (rows as any[])[0];
-    if (!row) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
-    return NextResponse.json(row);
+    const row = (rows as Record<string, unknown>[])[0];
+    if (!row) return NextResponse.json({ error: "User not found" }, { status: 404 });
+    const [p] = await pool.query(`SELECT permission_key FROM ${USER_PERMS_TABLE} WHERE user_id = ?`, [id]);
+    return NextResponse.json({
+      ...row,
+      custom: Number(row.custom) === 1,
+      permissions: (p as { permission_key: string }[]).map((r) => r.permission_key),
+    });
   } catch (err) {
     console.error("GET /api/users/[id] error:", err);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
-/* ============================================================
-   PUT /api/users/[id]
-   Updates the user, optionally the password, and the role.
-============================================================ */
-export async function PUT(
-  req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const pool = getPool();
-  const conn = await pool.getConnection();
-
+/* PUT /api/users/[id] — edit details, password (optional) and access */
+export async function PUT(req: NextRequest, { params }: Ctx) {
+  const a = await requirePerm(req, "users.manage");
+  if (a instanceof Response) return a;
+  const conn = await getPool().getConnection();
   try {
-    const { id } = await params;
-    const authUser = await requireUser(req);
-    if (!authUser) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    await ensureAccessSchema();
+    const id = Number((await params).id);
+    const [ex] = await conn.query("SELECT * FROM users WHERE id = ? AND company_id = ? LIMIT 1", [id, a.companyId]);
+    const existing = (ex as Record<string, unknown>[])[0];
+    if (!existing) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
-    const body = await req.json();
+    const u = parseUserInput(await req.json().catch(() => ({})));
+    const bad = validateUser(u, false);
+    if (bad) return NextResponse.json({ error: bad }, { status: 400 });
+    if (u.role_id && !(await roleExists(conn, u.role_id, a.companyId)))
+      return NextResponse.json({ error: "Role not found" }, { status: 400 });
+    if (!u.role_id && !u.custom)
+      return NextResponse.json({ error: "Choose a role or tick custom permissions" }, { status: 400 });
 
-    /* ---- Fetch existing ---- */
-    const [existingRows] = await conn.query(
-      `SELECT * FROM users WHERE id = ? AND company_id = ? LIMIT 1`,
-      [id, authUser.company_id]
-    );
-    const existing = (existingRows as any[])[0];
-    if (!existing) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const [cr] = await conn.query("SELECT role_id FROM user_roles WHERE user_id = ? ORDER BY role_id LIMIT 1", [id]);
+    const currentRole = (cr as { role_id: number }[])[0]?.role_id ?? null;
+    const wasAdmin = await isSystemRole(conn, currentRole, a.companyId);
+    const willBeAdmin = await isSystemRole(conn, u.role_id, a.companyId);
 
-    /* ---- Prepare values ---- */
-    const name = String(body.name ?? existing.name).trim();
-    const email = String(body.email ?? existing.email).trim().toLowerCase();
-    const phone =
-      body.phone !== undefined
-        ? body.phone
-          ? String(body.phone).trim()
-          : null
-        : existing.phone;
-    const username =
-      body.username !== undefined
-        ? body.username
-          ? String(body.username).trim()
-          : null
-        : existing.username;
-    const branchId =
-      body.branch_id !== undefined
-        ? body.branch_id
-          ? Number(body.branch_id)
-          : null
-        : existing.branch_id;
-    const status = body.status ?? existing.status;
+    if (!a.isSuperAdmin && (wasAdmin || willBeAdmin))
+      return NextResponse.json({ error: "Only a Super Admin can change a Super Admin" }, { status: 403 });
+    if (id === a.userId && wasAdmin && (!willBeAdmin || u.status !== "active"))
+      return NextResponse.json({ error: "You can't remove your own Super Admin access" }, { status: 400 });
+    if (wasAdmin && (!willBeAdmin || u.status !== "active") && (await activeSuperAdmins(conn, a.companyId, id)) === 0)
+      return NextResponse.json({ error: "At least one active Super Admin must remain" }, { status: 400 });
 
-    if (!name || !email) {
-      return NextResponse.json(
-        { error: "Name and email are required" },
-        { status: 400 }
-      );
-    }
-
-    /* ---- Duplicate email check ---- */
-    const [dup] = await conn.query(
-      `SELECT id FROM users
-       WHERE company_id = ? AND LOWER(email) = ? AND id <> ?
-       LIMIT 1`,
-      [authUser.company_id, email, id]
-    );
-    if ((dup as any[]).length) {
-      return NextResponse.json(
-        { error: "Another user already has this email" },
-        { status: 409 }
-      );
-    }
+    const dup = await findDuplicate(conn, u, id);
+    if (dup) return NextResponse.json({ error: dup }, { status: 409 });
 
     await conn.beginTransaction();
-
-    /* ---- Build update ---- */
-    const updates: string[] = [
-      "name = ?",
-      "email = ?",
-      "phone = ?",
-      "username = ?",
-      "branch_id = ?",
-      "status = ?",
-    ];
-    const updateParams: any[] = [
-      name,
-      email,
-      phone,
-      username,
-      branchId,
-      status,
-    ];
-
-    /* ---- Optional password change ---- */
-    if (body.password && String(body.password).length > 0) {
-      if (String(body.password).length < 8) {
-        await conn.rollback();
-        return NextResponse.json(
-          { error: "Password must be at least 8 characters" },
-          { status: 400 }
-        );
-      }
-      const hash = await bcrypt.hash(String(body.password), 10);
-      updates.push("password_hash = ?");
-      updateParams.push(hash);
+    const sets = ["name = ?", "email = ?", "phone = ?", "username = ?", "branch_id = ?", "status = ?"];
+    const vals: unknown[] = [u.name, u.email, u.phone, u.username, u.branch_id, u.status];
+    if (u.password) {
+      sets.push("password_hash = ?");
+      vals.push(await bcrypt.hash(u.password, 10));
     }
-
-    updateParams.push(id, authUser.company_id);
-    await conn.query(
-      `UPDATE users SET ${updates.join(", ")}
-       WHERE id = ? AND company_id = ?`,
-      updateParams
-    );
-
-    /* ---- Sync role (single-role model) ---- */
-    if (body.role_id !== undefined) {
-      await conn.query(`DELETE FROM user_roles WHERE user_id = ?`, [id]);
-      if (body.role_id) {
-        await conn.query(
-          `INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)`,
-          [id, Number(body.role_id)]
-        );
-      }
+    vals.push(id, a.companyId);
+    await conn.query(`UPDATE users SET ${sets.join(", ")} WHERE id = ? AND company_id = ?`, vals);
+    await saveUserAccess(conn, id, u, a.userId);
+    // sign the user out everywhere when suspended or password changed
+    if (u.status !== "active" || u.password) {
+      await conn.query("DELETE FROM sessions WHERE user_id = ?", [id]).catch(() => {});
     }
-
+    await audit(conn, a.companyId, a.userId, "update", id, {
+      name: u.name, email: u.email, phone: u.phone, username: u.username, status: u.status,
+      role_id: u.role_id, custom: u.custom, permissions: u.custom ? u.permissions : undefined,
+      password_changed: !!u.password,
+    }, req);
     await conn.commit();
-
-    return NextResponse.json({ message: "User updated successfully" });
+    invalidateAccess(id);
+    return NextResponse.json({ message: "User updated" });
   } catch (err) {
-    await conn.rollback();
+    try { await conn.rollback(); } catch {}
     console.error("PUT /api/users/[id] error:", err);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   } finally {
     conn.release();
   }
 }
 
-/* ============================================================
-   DELETE /api/users/[id]
-   Guards:
-     - cannot delete yourself
-     - cannot delete the last active user in the company
-============================================================ */
-export async function DELETE(
-  req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const pool = getPool();
-  const conn = await pool.getConnection();
-
+/* DELETE /api/users/[id] — not yourself, not the last Super Admin */
+export async function DELETE(req: NextRequest, { params }: Ctx) {
+  const a = await requirePerm(req, "users.manage");
+  if (a instanceof Response) return a;
+  const conn = await getPool().getConnection();
   try {
-    const { id } = await params;
-    const authUser = await requireUser(req);
-    if (!authUser) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const id = Number((await params).id);
+    if (id === a.userId) return NextResponse.json({ error: "You cannot delete your own account" }, { status: 400 });
+    const [t] = await conn.query("SELECT id, name FROM users WHERE id = ? AND company_id = ? LIMIT 1", [id, a.companyId]);
+    const target = (t as { id: number; name: string }[])[0];
+    if (!target) return NextResponse.json({ error: "User not found" }, { status: 404 });
+    const [cr] = await conn.query("SELECT role_id FROM user_roles WHERE user_id = ? ORDER BY role_id LIMIT 1", [id]);
+    const isAdmin = await isSystemRole(conn, (cr as { role_id: number }[])[0]?.role_id ?? null, a.companyId);
+    if (isAdmin && !a.isSuperAdmin)
+      return NextResponse.json({ error: "Only a Super Admin can delete a Super Admin" }, { status: 403 });
+    if (isAdmin && (await activeSuperAdmins(conn, a.companyId, id)) === 0)
+      return NextResponse.json({ error: "At least one active Super Admin must remain" }, { status: 400 });
 
-    const targetId = Number(id);
-
-    if (targetId === authUser.id) {
-      return NextResponse.json(
-        { error: "You cannot delete your own account" },
-        { status: 400 }
-      );
-    }
-
-    const [targetRows] = await conn.query(
-      `SELECT id FROM users WHERE id = ? AND company_id = ? LIMIT 1`,
-      [targetId, authUser.company_id]
-    );
-    if (!(targetRows as any[]).length) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
-    const [countRows] = await conn.query(
-      `SELECT COUNT(*) AS cnt FROM users
-       WHERE company_id = ? AND status = 'active'`,
-      [authUser.company_id]
-    );
-    const activeCount = (countRows as any[])[0].cnt as number;
-    if (activeCount <= 1) {
-      return NextResponse.json(
-        { error: "Cannot delete the last active user" },
-        { status: 400 }
-      );
-    }
-
-    await conn.query(`DELETE FROM users WHERE id = ? AND company_id = ?`, [
-      targetId,
-      authUser.company_id,
-    ]);
-
-    return NextResponse.json({ message: "User deleted successfully" });
+    await conn.beginTransaction();
+    await conn.query("DELETE FROM user_roles WHERE user_id = ?", [id]);
+    await conn.query(`DELETE FROM ${USER_PERMS_TABLE} WHERE user_id = ?`, [id]);
+    await conn.query(`DELETE FROM ${USER_ACCESS_TABLE} WHERE user_id = ?`, [id]);
+    await conn.query("DELETE FROM sessions WHERE user_id = ?", [id]).catch(() => {});
+    await conn.query("DELETE FROM users WHERE id = ? AND company_id = ?", [id, a.companyId]);
+    await audit(conn, a.companyId, a.userId, "delete", id, { name: target.name }, req);
+    await conn.commit();
+    invalidateAccess(id);
+    return NextResponse.json({ message: "User deleted" });
   } catch (err) {
+    try { await conn.rollback(); } catch {}
     console.error("DELETE /api/users/[id] error:", err);
+    // most likely the user is linked to records (leads, bills…) -> suggest suspending
     return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
+      { error: "Couldn't delete this user (they may be linked to records). Set status to Inactive instead." },
+      { status: 409 }
     );
   } finally {
     conn.release();

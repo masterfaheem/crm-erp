@@ -25,6 +25,7 @@ interface Report {
   channel: R[];
   by_day: R[];
   top_products: R[];
+  can_see_profit?: boolean;
   top_customers: R[];
   receivables: R[];
   orders_by_status: R[];
@@ -144,8 +145,12 @@ export default function SalesReportPage() {
                       onClick={() =>
                         downloadCsv(
                           "top-products",
-                          ["Product", "SKU", "Qty", "Revenue", "Est. profit"],
-                          data.top_products.map((p) => [String(p.name), String(p.code || ""), N(p.qty), Math.round(N(p.revenue)), Math.round(N(p.profit))])
+                          data.can_see_profit === false ? ["Product", "SKU", "Qty", "Revenue"] : ["Product", "SKU", "Qty", "Revenue", "Est. profit"],
+                          data.top_products.map((p) =>
+                            data.can_see_profit === false
+                              ? [String(p.name), String(p.code || ""), N(p.qty), Math.round(N(p.revenue))]
+                              : [String(p.name), String(p.code || ""), N(p.qty), Math.round(N(p.revenue)), Math.round(N(p.profit))]
+                          )
                         )
                       }
                     />
@@ -158,7 +163,7 @@ export default function SalesReportPage() {
                           <th className="pb-2">Product</th>
                           <th className="pb-2 text-right">Qty</th>
                           <th className="pb-2 text-right">Revenue</th>
-                          <th className="pb-2 text-right">Profit</th>
+                          {data.can_see_profit !== false && <th className="pb-2 text-right">Profit</th>}
                         </tr>
                       </thead>
                       <tbody>
@@ -170,7 +175,9 @@ export default function SalesReportPage() {
                             <td className="py-2 pr-2"><span className="font-medium text-gray-900">{String(p.name)}</span>{p.code && <span className="ml-1 text-[11px] text-gray-400">{String(p.code)}</span>}</td>
                             <td className="py-2 text-right">{N(p.qty)}</td>
                             <td className="py-2 text-right font-semibold">{rs(N(p.revenue))}</td>
-                            <td className="py-2 text-right text-gray-600">{p.profit === null ? "—" : rs(N(p.profit))}</td>
+                            {data.can_see_profit !== false && (
+                              <td className="py-2 text-right text-gray-600">{p.profit === null ? "—" : rs(N(p.profit))}</td>
+                            )}
                           </tr>
                         ))}
                       </tbody>

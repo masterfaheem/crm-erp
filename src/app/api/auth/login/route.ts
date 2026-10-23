@@ -6,56 +6,74 @@ import {
   SESSION_MAX_AGE,
 } from "@/lib/auth";
 import bcrypt from "bcryptjs";
+import { ensureAccessSchema } from "@/lib/access";
 
 /* ============================================================
    POST /api/auth/login
-   Body: { email, password }
+   Body: { identifier (email | username | phone), password }
    Sets an HTTP-only session cookie on success.
 ============================================================ */
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null);
 
-    const email = String(body?.email || "").trim().toLowerCase();
+    // one box: email, username or phone number
+    const identifier = String(body?.identifier ?? body?.email ?? "").trim();
+    const login = identifier.toLowerCase();
     const password = String(body?.password || "");
 
-    if (!email || !password) {
+    if (!login || !password) {
       return NextResponse.json(
-        { message: "Email and password are required." },
+        { message: "Email / username / phone and password are required." },
         { status: 400 }
       );
     }
 
     const pool = getPool();
+    await ensureAccessSchema().catch((e) => console.error("access schema", e));
 
-    // Look up the user by email (case-insensitive via lowercase compare).
-    // Emails are stored unique per company; if multiple companies could
-    // share an email, we pick the first active match. Adjust if needed.
-    const [rows] = await pool.query(
-      `SELECT
-         u.id,
-         u.company_id,
-         u.branch_id,
-         u.name,
-         u.email,
-         u.password_hash,
-         u.status,
-         c.name AS company_name,
-         c.status AS company_status
+    const SELECT = `SELECT
+         u.id, u.company_id, u.branch_id, u.name, u.email, u.phone, u.username,
+         u.password_hash, u.status,
+         c.name AS company_name, c.status AS company_status
        FROM users u
-       JOIN companies c ON c.id = u.company_id
-       WHERE LOWER(u.email) = ?
-       ORDER BY u.id ASC
+       JOIN companies c ON c.id = u.company_id`;
+
+    // 1) email or username
+    let [rows] = await pool.query(
+      `${SELECT}
+       WHERE LOWER(u.email) = ? OR LOWER(u.username) = ?
+       ORDER BY (u.status = 'active') DESC, u.id ASC
        LIMIT 1`,
-      [email]
+      [login, login]
     );
+    // 2) phone number (compare last 10 digits: 0300..., +92 300..., 92300...)
+    const digits = login.replace(/\D/g, "");
+    if (!(rows as unknown[]).length && digits.length >= 10 && !/[a-z@]/.test(login)) {
+      const [cands] = await pool.query(
+        `${SELECT} WHERE u.phone IS NOT NULL AND u.phone <> '' ORDER BY (u.status = 'active') DESC, u.id ASC`
+      );
+      const key = digits.slice(-10);
+      rows = (cands as { phone: string }[]).filter(
+        (r) => String(r.phone).replace(/\D/g, "").slice(-10) === key
+      ) as typeof rows;
+    }
 
     const user = (rows as any[])[0];
 
     // Generic error to avoid leaking which emails exist
     if (!user) {
       return NextResponse.json(
-        { message: "Invalid email or password." },
+        { message: "Wrong login details or password." },
+        { status: 401 }
+      );
+    }
+
+    // Verify password hash
+    const ok = user.password_hash ? await bcrypt.compare(password, user.password_hash) : false;
+    if (!ok) {
+      return NextResponse.json(
+        { message: "Wrong login details or password." },
         { status: 401 }
       );
     }
@@ -79,19 +97,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Verify password hash
-    const ok = await bcrypt.compare(password, user.password_hash);
-    if (!ok) {
-      return NextResponse.json(
-        { message: "Invalid email or password." },
-        { status: 401 }
-      );
-    }
-
     // Issue JWT session
     const token = signSession({
       userId: user.id,
-      email: user.email,
+      email: user.email || "",
     });
 
     // Record login time + IP/UA

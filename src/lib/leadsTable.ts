@@ -295,10 +295,16 @@ export const LEAD_SELECT = `
 ============================================================ */
 export function buildLeadFilters(
   sp: URLSearchParams,
-  companyId: number
+  companyId: number,
+  ownerId: number | null = null
 ): { whereSql: string; params: unknown[] } {
   const where: string[] = ["l.company_id = ?"];
   const params: unknown[] = [companyId];
+  if (ownerId) {
+    // users without "see everyone's leads" only get their own
+    where.push("(l.assigned_to = ? OR l.created_by = ?)");
+    params.push(ownerId, ownerId);
+  }
   const get = (k: string) => sp.get(k)?.trim() || "";
   const like = (v: string) => `%${v}%`;
 
@@ -493,4 +499,10 @@ export async function nextLeadNumberBase(
 
 export function formatLeadNumber(n: number): string {
   return `LEAD-${String(n).padStart(4, "0")}`;
+}
+
+/* SQL + params limiting leads to one owner (assigned to or added by) */
+export function ownerSql(ownerId: number | null, alias = "l"): { sql: string; params: number[] } {
+  if (!ownerId) return { sql: "", params: [] };
+  return { sql: ` AND (${alias}.assigned_to = ? OR ${alias}.created_by = ?)`, params: [ownerId, ownerId] };
 }

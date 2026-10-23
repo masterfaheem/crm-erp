@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
+import { accessFromRequest, can, stripFields } from "@/lib/access";
 import { ensureLedgerReady } from "@/lib/ledgerSetup";
 import { recalcCustomer } from "@/lib/ledger";
 import { verifySession, SESSION_COOKIE_NAME } from "@/lib/auth";
@@ -114,8 +115,10 @@ export async function GET(
       [id]
     );
 
+    const showBal = can(await accessFromRequest(req), "customers.balance");
     return NextResponse.json({
-      ...customer,
+      ...(showBal ? customer : stripFields(customer, ["opening_balance", "current_balance", "balance_type", "credit_limit"])),
+      can_see_balance: showBal,
       contacts: contactRows,
       groups: groupRows,
     });
@@ -146,6 +149,12 @@ export async function PUT(
     }
 
     const body = await req.json();
+    if (!can(await accessFromRequest(req), "customers.balance")) {
+      // can't see khata -> can't change opening balance / credit limit either
+      delete body.opening_balance;
+      delete body.balance_type;
+      delete body.credit_limit;
+    }
 
     const [existingRows] = await conn.query(
       `SELECT * FROM customers WHERE id = ? AND company_id = ? LIMIT 1`,

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
+import { accessFromRequest, can, stripFields } from "@/lib/access";
 import { ensureLedgerReady } from "@/lib/ledgerSetup";
 import { verifySession, SESSION_COOKIE_NAME } from "@/lib/auth";
 import { findCustomerByPhones } from "@/lib/orderHandover";
@@ -202,8 +203,11 @@ export async function GET(req: NextRequest) {
       [...params, limit, offset]
     );
 
+    /* khata / balance is confidential */
+    const showBal = can(await accessFromRequest(req), "customers.balance");
     return NextResponse.json({
-      data: rows,
+      data: showBal ? rows : (rows as Record<string, unknown>[]).map((r) => stripFields(r, ["opening_balance", "current_balance", "balance_type", "credit_limit"])),
+      can_see_balance: showBal,
       pagination: {
         page,
         limit,

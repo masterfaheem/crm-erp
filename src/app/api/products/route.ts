@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
+import { accessFromRequest, can } from "@/lib/access";
 import { ensureStockTable, STOCK_SQL } from "@/lib/ledger";
 
 /* ============================================================
@@ -100,8 +101,11 @@ export async function GET(req: NextRequest) {
       [companyId]
     );
 
+    /* cost price is confidential */
+    const showCost = can(await accessFromRequest(req), "products.cost");
     return NextResponse.json({
-      data: rows,
+      data: showCost ? rows : (rows as Record<string, unknown>[]).map((r) => ({ ...r, purchase_price: null })),
+      can_see_cost: showCost,
       pagination: {
         page,
         limit,
@@ -267,7 +271,11 @@ export async function POST(req: NextRequest) {
       [insertId, companyId]
     );
 
-    return NextResponse.json({ data: row }, { status: 201 });
+    const showCostNew = can(await accessFromRequest(req), "products.cost");
+    return NextResponse.json(
+      { data: showCostNew ? row : { ...(row as Record<string, unknown>), purchase_price: null } },
+      { status: 201 }
+    );
   } catch (err) {
     console.error("[POST /api/products]", err);
     return NextResponse.json(

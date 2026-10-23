@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
+import { accessFromRequest, can } from "@/lib/access";
 import { cleanDate } from "@/lib/leadsTable";
 import { HANDOVER_TABLE, ensureHandoverTable } from "@/lib/orderHandover";
 
@@ -132,13 +133,15 @@ export async function GET(req: NextRequest) {
       [user.company_id]
     );
 
+    const showProfit = can(await accessFromRequest(req), "sales.profit");
     return NextResponse.json({
       data: {
         range: { from, to },
         totals: totals[0] || {},
         channel,
         by_day: byDay,
-        top_products: topProducts,
+        top_products: showProfit ? topProducts : topProducts.map((t) => ({ ...t, profit: null })),
+        can_see_profit: showProfit,
         top_customers: topCustomers,
         receivables,
         orders_by_status: ordersByStatus,

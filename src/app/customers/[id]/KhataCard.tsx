@@ -39,11 +39,17 @@ export default function KhataCard({ customerId }: { customerId: number }) {
   const [sum, setSum] = useState<Summary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const [hidden, setHidden] = useState(false);
 
   useEffect(() => {
     let alive = true;
     fetch(`/api/customers/${customerId}/ledger`, { credentials: "include" })
       .then(async (r) => {
+        if (r.status === 403) {
+          // no "See khata / balance" permission
+          if (alive) setHidden(true);
+          return;
+        }
         const j = await r.json();
         if (!r.ok) throw new Error(j.error || "Unable to load khata");
         if (!alive) return;
@@ -57,6 +63,7 @@ export default function KhataCard({ customerId }: { customerId: number }) {
   }, [customerId]);
 
   const shown = showAll ? rows : rows.slice(0, 10);
+  if (hidden) return null;
   const bal = sum ? balText(sum.balance) : null;
 
   return (
