@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useAccess } from "@/app/components/useAccess";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import Navbar from "@/app/components/Navbar";
@@ -109,6 +110,7 @@ function preset(days: number, hour = 11): string {
 }
 
 export default function LeadViewPage() {
+  const { can } = useAccess();
   const params = useParams();
   const router = useRouter();
   const id = params?.id as string;
@@ -284,7 +286,7 @@ export default function LeadViewPage() {
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    {!lead.handover_id && lead.status !== "lost" && (
+                    {!lead.handover_id && lead.status !== "lost" && can("leads.convert") && (
                       <button
                         onClick={() => setShowConvert(true)}
                         className={`rounded-lg px-4 py-2 text-sm font-bold ${
@@ -296,13 +298,15 @@ export default function LeadViewPage() {
                         ✅ Convert to Order
                       </button>
                     )}
+                    {can("leads.edit") && (
                     <Link
                       href={`/leads/${lead.id}/edit`}
                       className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50"
                     >
                       Edit Lead
                     </Link>
-                    {!lead.handover_id && (
+                    )}
+                    {!lead.handover_id && can("leads.delete") && (
                       <button
                         onClick={handleDelete}
                         disabled={deleting}
