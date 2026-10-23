@@ -348,7 +348,7 @@ function CustomerDetailContent() {
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard
           label="Current Balance"
-          value={formatCurrency(Math.abs(balanceNum), customer.currency_code)}
+          value={customer.current_balance === null ? "🔒" : formatCurrency(Math.abs(balanceNum), customer.currency_code)}
           valueClass={
             balanceNum > 0 ? "text-red-600" : balanceNum < 0 ? "text-[#0fa846]" : "text-gray-900"
           }
