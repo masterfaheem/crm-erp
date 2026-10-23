@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import Navbar from "@/app/components/Navbar";
 
@@ -73,9 +74,23 @@ function DashboardMain() {
       }`}
     >
       <div className="p-4 sm:p-6 lg:p-8">
+        <Suspense fallback={null}>
+          <DeniedBanner />
+        </Suspense>
         <DashboardContent />
       </div>
     </main>
+  );
+}
+
+/* shown when the proxy sent the user here from a page they can't open */
+function DeniedBanner() {
+  const denied = useSearchParams().get("denied");
+  if (!denied) return null;
+  return (
+    <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+      🔒 You don&apos;t have access to <b>{denied}</b>. Ask your admin to give permission from Team &amp; Access.
+    </div>
   );
 }
 
