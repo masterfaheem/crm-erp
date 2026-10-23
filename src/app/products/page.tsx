@@ -13,7 +13,7 @@ interface ProductRow {
   name: string;
   description: string | null;
   product_type: "product" | "service";
-  purchase_price: number;
+  purchase_price: number | null;
   sale_price: number;
   wholesale_price: number;
   tax_rate: number;
@@ -465,7 +465,7 @@ function ProductsContent() {
                       </span>
                     </td>
                     <td className="hidden whitespace-nowrap px-4 py-3.5 text-right text-sm text-gray-600 md:table-cell">
-                      {formatCurrency(Number(p.purchase_price))}
+                      {p.purchase_price === null ? "🔒" : formatCurrency(Number(p.purchase_price))}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3.5 text-right text-sm font-semibold text-gray-900">
                       {formatCurrency(Number(p.sale_price))}
@@ -595,6 +595,8 @@ function ProductModal({
   const [status, setStatus] = useState<string>(product?.status || "active");
   const [notes, setNotes] = useState(product?.notes || "");
 
+  // null = this user can't see cost price (it stays unchanged on save)
+  const costHidden = !!product && product.purchase_price === null;
   const [purchasePrice, setPurchasePrice] = useState(
     String(product?.purchase_price ?? 0)
   );
@@ -882,8 +884,10 @@ function ProductModal({
                     type="number"
                     step="0.01"
                     min="0"
-                    value={purchasePrice}
+                    value={costHidden ? "" : purchasePrice}
                     onChange={(e) => setPurchasePrice(e.target.value)}
+                    disabled={costHidden}
+                    placeholder={costHidden ? "🔒 Hidden (no permission)" : undefined}
                     className={inputCls}
                   />
                 </div>
