@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
-import { LEADS_TABLE, ensureLeadsTable, nowPKT } from "@/lib/leadsTable";
+import { accessFromRequest, can } from "@/lib/access";
+import { LEADS_TABLE, ensureLeadsTable, nowPKT, ownerSql } from "@/lib/leadsTable";
 
 /* ============================================================
    GET /api/leads/follow-ups
@@ -14,6 +15,7 @@ export async function GET(req: NextRequest) {
     if (!user) return unauthorized();
     await ensureLeadsTable();
 
+    const own = ownerSql(can(await accessFromRequest(req), "leads.view_all") ? null : user.id, "crm_leads");
     const now = nowPKT();
     const endOfDay = `${now.slice(0, 10)} 23:59:59`;
     const [rows] = await getPool().query(
@@ -23,8 +25,8 @@ export async function GET(req: NextRequest) {
          SUM(follow_up_done = 0 AND follow_up_at > ?)                AS upcoming,
          SUM(follow_up_done = 1)                                     AS done
        FROM ${LEADS_TABLE}
-       WHERE company_id = ? AND follow_up_at IS NOT NULL`,
-      [now, now, endOfDay, endOfDay, user.company_id]
+       WHERE company_id = ? AND follow_up_at IS NOT NULL${own.sql}`,
+      [now, now, endOfDay, endOfDay, user.company_id, ...own.params]
     );
     const r = (rows as Record<string, unknown>[])[0] || {};
     const n = (k: string) => Number(r[k] || 0);
