@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import Navbar from "@/app/components/Navbar";
 import StockModal from "./StockModal";
 
@@ -308,6 +309,12 @@ function InventoryContent() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Link
+            href="/inventory/import"
+            className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
+          >
+            Import opening stock
+          </Link>
           <button
             onClick={() => setView("table")}
             className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition ${

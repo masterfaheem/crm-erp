@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { query, getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
 import { ensureStockTable, syncDocStock, nextDocNumber } from "@/lib/ledger";
+import { ensureCostingTables, productsOnPurchaseBill, recomputeAvgCost } from "@/lib/costing";
 
 async function nextBillNumber(companyId: number): Promise<string> {
   return nextDocNumber("purchase_bills", "bill_number", "PB", companyId);
@@ -156,6 +157,7 @@ export async function POST(req: NextRequest) {
     const balance = Math.max(0, grand_total - paid_amount);
 
     await ensureStockTable();
+    await ensureCostingTables();
     await conn.beginTransaction();
 
     const bill_number = await nextBillNumber(companyId);
@@ -194,6 +196,8 @@ export async function POST(req: NextRequest) {
 
     // stock in (+qty) for tracked products
     await syncDocStock(conn, companyId, "purchase_bill", billId, userId);
+    // product cost = weighted average of opening stock + purchases
+    await recomputeAvgCost(conn, companyId, await productsOnPurchaseBill(conn, billId));
 
     await conn.commit();
     conn.release();

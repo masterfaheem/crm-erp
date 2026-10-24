@@ -4,6 +4,7 @@ import { REFUND_TABLE, STOCK_TABLE } from "@/lib/ledger";
 import { INVOICE_META_TABLE, ensureSalesOpsTables } from "@/lib/salesOps";
 import { lockedSeqNumber } from "@/lib/posSale";
 import { isExchangeNo } from "@/lib/format";
+import { OPENING_COST_SQL, ensureCostingTables } from "@/lib/costing";
 
 /* ============================================================
    ACCOUNTING — double-entry general ledger
@@ -64,6 +65,7 @@ let tablesReady = false;
 export async function ensureAccountingTables(): Promise<void> {
   if (tablesReady) return;
   await ensureSalesOpsTables();
+  await ensureCostingTables();
   const pool = getPool();
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ${ACC_TABLE} (
@@ -329,7 +331,8 @@ async function supplierPaymentDrafts(conn: Conn, cid: number): Promise<Draft[]> 
 
 async function stockAdjustmentDrafts(conn: Conn, cid: number, info: SyncInfo): Promise<Draft[]> {
   const [rows] = await conn.query(
-    `SELECT m.id, m.qty, m.note, DATE_FORMAT(m.created_at, '%Y-%m-%d') AS d, p.name, p.purchase_price
+    `SELECT m.id, m.qty, m.note, DATE_FORMAT(m.created_at, '%Y-%m-%d') AS d, p.name,
+            COALESCE(m.unit_cost, p.purchase_price) AS purchase_price
        FROM ${STOCK_TABLE} m JOIN products p ON p.id = m.product_id
       WHERE m.company_id = ? AND m.move_type = 'adjustment'`,
     [cid]
@@ -358,15 +361,15 @@ async function stockAdjustmentDrafts(conn: Conn, cid: number, info: SyncInfo): P
 async function openingDrafts(conn: Conn, cid: number): Promise<Draft[]> {
   const out: Draft[] = [];
   const [[st]] = await conn.query(
-    `SELECT COALESCE(SUM(opening_stock * purchase_price), 0) AS v, DATE_FORMAT(MIN(created_at), '%Y-%m-%d') AS d
-       FROM products WHERE company_id = ? AND opening_stock > 0 AND purchase_price > 0
-        AND COALESCE(track_inventory, 1) = 1 AND COALESCE(product_type, 'product') = 'product'`,
+    `SELECT COALESCE(SUM(p.opening_stock * ${OPENING_COST_SQL("p")}), 0) AS v, DATE_FORMAT(MIN(p.created_at), '%Y-%m-%d') AS d
+       FROM products p WHERE p.company_id = ? AND p.opening_stock > 0 AND ${OPENING_COST_SQL("p")} > 0
+        AND COALESCE(p.track_inventory, 1) = 1 AND COALESCE(p.product_type, 'product') = 'product'`,
     [cid]
   );
   if (Number(st?.v) > 0) {
     out.push({
       source_type: "opening_stock", source_id: 0, source_ref: "OPENING-STOCK", entry_date: String(st.d || "2026-01-01"),
-      memo: "Opening stock (products' opening quantity × purchase price)",
+      memo: "Opening stock (products' opening quantity × opening cost)",
       lines: [D("inventory", Number(st.v)), C("opening_equity", Number(st.v))],
     });
   }
