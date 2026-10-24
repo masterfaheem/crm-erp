@@ -171,6 +171,7 @@ const NAV_GROUPS: NavGroup[] = [
       { label: "Quotations", href: "/sales/quotations" },
       { label: "Sales Orders", href: "/sales/sales-orders" },
       { label: "Invoices", href: "/sales/invoices" },
+      { label: "⇄ Exchange / Return", href: "/exchange" },
       { label: "Customer Payments", href: "/sales/customer-payments" },
     ],
   },

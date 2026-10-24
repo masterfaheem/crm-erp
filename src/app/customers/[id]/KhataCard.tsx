@@ -5,7 +5,7 @@ import Link from "next/link";
 
 type Entry = {
   date: string;
-  type: "bill" | "payment";
+  type: "bill" | "payment" | "refund";
   ref_id: number;
   number: string;
   description: string;
@@ -124,14 +124,16 @@ export default function KhataCard({ customerId }: { customerId: number }) {
                           className={`rounded border px-1.5 py-0.5 text-[10px] font-medium ${
                             e.type === "bill"
                               ? "border-sky-200 bg-sky-50 text-sky-700"
+                              : e.type === "refund"
+                              ? "border-red-200 bg-red-50 text-red-700"
                               : "border-emerald-200 bg-emerald-50 text-emerald-700"
                           }`}
                         >
-                          {e.type === "bill" ? "Bill" : METHOD[e.method || ""] || "Payment"}
+                          {e.type === "bill" ? "Bill" : e.type === "refund" ? "Refund" : METHOD[e.method || ""] || "Payment"}
                         </span>
                         <span className="font-mono text-xs text-gray-700">{e.number}</span>
                       </div>
-                      {e.type === "payment" && e.description && (
+                      {(e.type !== "bill" || e.description !== "Sale bill") && e.description && (
                         <div className="mt-0.5 max-w-xs truncate text-[11px] text-gray-500">{e.description}</div>
                       )}
                     </td>

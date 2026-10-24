@@ -5,6 +5,7 @@ import Navbar from "@/app/components/Navbar";
 import { useAccess } from "@/app/components/useAccess";
 import { OrderBoard, type Order as BoardOrder } from "@/app/dispatch/OrderBoard";
 import { LEAD_SOURCES, LEAD_SOURCE_GROUPS, PROFESSIONS } from "@/lib/leadOptions";
+import { CitySelect } from "@/app/leads/leadUi";
 
 /* ============================================================
    TYPES
@@ -112,6 +113,23 @@ interface LeadMatch {
 }
 const EMPTY_WALK_IN: WalkInLead = { lead_id: null, source: "", profession: "", profession_other: "" };
 
+/* walk-in: handed over at the counter, or sent by delivery (goes to the dispatch board) */
+interface WalkInDelivery {
+  mode: "counter" | "delivery";
+  delivery_name: string;
+  delivery_phone: string;
+  delivery_house: string;
+  delivery_street: string;
+  delivery_area: string;
+  delivery_landmark: string;
+  delivery_city: string;
+  dispatch_notes: string;
+}
+const EMPTY_DELIVERY: WalkInDelivery = {
+  mode: "counter", delivery_name: "", delivery_phone: "", delivery_house: "", delivery_street: "",
+  delivery_area: "", delivery_landmark: "", delivery_city: "", dispatch_notes: "",
+};
+
 function newCheckoutRef(): string {
   try {
     if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
@@ -125,6 +143,7 @@ interface InvoiceResult {
   id: number;
   lead_text?: string | null;
   lead_warning?: string | null;
+  dispatch_text?: string | null;
   invoice_number: string;
   customer_name: string;
   grand_total: number;
@@ -260,6 +279,7 @@ function POSContent() {
   /* walk-in lead details + one id per checkout (double-click / retry safe) */
   const [walkIn, setWalkIn] = useState<WalkInLead>(EMPTY_WALK_IN);
   const [leadMatch, setLeadMatch] = useState<LeadMatch | null>(null);
+  const [walkInDelivery, setWalkInDelivery] = useState<WalkInDelivery>(EMPTY_DELIVERY);
   const checkoutRef = useRef("");
 
   /* online-order counts for the header badge (refresh every minute) */
@@ -318,6 +338,11 @@ function POSContent() {
     setPendingOrders([]);
     setWalkIn(EMPTY_WALK_IN);
     setLeadMatch(null);
+    setWalkInDelivery(
+      c
+        ? { ...EMPTY_DELIVERY, delivery_name: c.name || "", delivery_phone: c.whatsapp || c.phone || "", delivery_area: c.billing_address || "", delivery_city: c.city || "" }
+        : EMPTY_DELIVERY
+    );
     if (!c) {
       setLinkedOrder(null);
       return;
@@ -526,6 +551,13 @@ function POSContent() {
       setError("Select the lead source (how the customer found Techno X) — it is saved on the CRM lead.");
       return;
     }
+    if (!linkedOrder && walkInDelivery.mode === "delivery") {
+      const d = walkInDelivery;
+      if (!d.delivery_name.trim() || !d.delivery_phone.trim() || !(d.delivery_house.trim() || d.delivery_street.trim() || d.delivery_area.trim()) || !d.delivery_city.trim()) {
+        setError("For delivery, fill name, phone, address and city.");
+        return;
+      }
+    }
     if (paid < totals.grandTotal) {
       if (
         !window.confirm(
@@ -549,6 +581,7 @@ function POSContent() {
               profession: walkIn.profession || null,
               profession_other: walkIn.profession === "other" ? walkIn.profession_other || null : null,
             },
+        walk_in_delivery: linkedOrder ? null : walkInDelivery,
         customer_id: selectedCustomer.id,
         invoice_date: new Date().toISOString().slice(0, 10),
         reference: reference.trim() || null,
@@ -601,7 +634,12 @@ function POSContent() {
           : linkedOrder
           ? "Online order — its lead is already Won"
           : null,
-        lead_warning: json.lead_warning || null,
+        lead_warning: [json.lead_warning, json.dispatch_warning].filter(Boolean).join(" ") || null,
+        dispatch_text: json.dispatch
+          ? json.dispatch.mode === "delivery"
+            ? `Sent to the dispatch board for delivery (${json.dispatch.order_number})`
+            : "Handed over at the counter — marked delivered"
+          : null,
         invoice_number: json.data?.invoice_number ?? "INV-XXX",
         customer_name: selectedCustomer.name,
         grand_total: totals.grandTotal,
@@ -618,6 +656,7 @@ function POSContent() {
       setPendingOrders([]);
       setWalkIn(EMPTY_WALK_IN);
       setLeadMatch(null);
+      setWalkInDelivery(EMPTY_DELIVERY);
       refreshCounts();
       setAmountPaid("");
       setPaymentRef("");
@@ -655,6 +694,14 @@ function POSContent() {
               year: "numeric",
             })}
           </span>
+          {can("sales.exchange") && (
+            <a
+              href="/exchange"
+              className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-800 shadow-sm hover:bg-gray-50"
+            >
+              ⇄ Exchange / Return
+            </a>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -1148,6 +1195,8 @@ function POSContent() {
           walkIn={linkedOrder ? null : walkIn}
           setWalkIn={setWalkIn}
           leadMatch={leadMatch}
+          delivery={walkInDelivery}
+          setDelivery={setWalkInDelivery}
           onClose={() => setShowCheckout(false)}
           onSubmit={handleSubmit}
         />
@@ -1831,9 +1880,13 @@ function CheckoutModal({
   walkIn,
   setWalkIn,
   leadMatch,
+  delivery,
+  setDelivery,
   onClose,
   onSubmit,
 }: {
+  delivery: WalkInDelivery;
+  setDelivery: (v: WalkInDelivery) => void;
   walkIn: WalkInLead | null;
   setWalkIn: (v: WalkInLead) => void;
   leadMatch: LeadMatch | null;
@@ -2118,6 +2171,45 @@ function CheckoutModal({
             </div>
           )}
 
+          {/* WALK-IN: COUNTER OR DELIVERY */}
+          {walkIn && (
+            <div className="rounded-md border border-gray-200 p-3">
+              <div className="mb-2 text-xs font-semibold text-gray-800">Hand-over</div>
+              <div className="grid grid-cols-2 gap-2">
+                {([
+                  ["counter", "🏬 Taken at counter", "Marked delivered now"],
+                  ["delivery", "🚚 Send by delivery", "Goes to the dispatch board"],
+                ] as const).map(([v, label, sub]) => (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => setDelivery({ ...delivery, mode: v })}
+                    className={`rounded-md border px-3 py-2 text-left text-xs transition ${
+                      delivery.mode === v ? "border-[#17D65D] bg-[#17D65D]/10 ring-1 ring-[#17D65D]" : "border-gray-200 hover:bg-gray-50"
+                    }`}
+                  >
+                    <div className="font-semibold text-gray-900">{label}</div>
+                    <div className="text-[10.5px] text-gray-500">{sub}</div>
+                  </button>
+                ))}
+              </div>
+              {delivery.mode === "delivery" && (
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <input value={delivery.delivery_name} onChange={(e) => setDelivery({ ...delivery, delivery_name: e.target.value })} placeholder="Receiver name *" className={inputCls} />
+                  <input value={delivery.delivery_phone} onChange={(e) => setDelivery({ ...delivery, delivery_phone: e.target.value })} placeholder="Phone *" inputMode="tel" className={inputCls} />
+                  <input value={delivery.delivery_house} onChange={(e) => setDelivery({ ...delivery, delivery_house: e.target.value })} placeholder="House / Shop #" className={inputCls} />
+                  <input value={delivery.delivery_street} onChange={(e) => setDelivery({ ...delivery, delivery_street: e.target.value })} placeholder="Street" className={inputCls} />
+                  <input value={delivery.delivery_area} onChange={(e) => setDelivery({ ...delivery, delivery_area: e.target.value })} placeholder="Area / Block" className={inputCls} />
+                  <input value={delivery.delivery_landmark} onChange={(e) => setDelivery({ ...delivery, delivery_landmark: e.target.value })} placeholder="Landmark (near…)" className={inputCls} />
+                  <div className="col-span-2">
+                    <CitySelect value={delivery.delivery_city} onChange={(v) => setDelivery({ ...delivery, delivery_city: v })} placeholder="City *" />
+                  </div>
+                  <input value={delivery.dispatch_notes} onChange={(e) => setDelivery({ ...delivery, dispatch_notes: e.target.value })} placeholder="Note for dispatch team (optional)" className={`${inputCls} col-span-2`} />
+                </div>
+              )}
+            </div>
+          )}
+
           {/* REFERENCE */}
           <div>
             <label className="mb-1.5 block text-xs font-medium text-gray-700">
@@ -2290,6 +2382,11 @@ function SuccessModal({
           {result.lead_text && (
             <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
               CRM lead: {result.lead_text}
+            </div>
+          )}
+          {result.dispatch_text && (
+            <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-700">
+              {result.dispatch_text}
             </div>
           )}
           {result.lead_warning && (

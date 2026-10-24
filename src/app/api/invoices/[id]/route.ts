@@ -60,12 +60,20 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       return NextResponse.json({ error: "Customer, date and at least one item are required." }, { status: 400 });
     }
     const [existing] = await query<any[]>(
-      "SELECT id, paid_amount, customer_id, discount_total, shipping_total FROM invoices WHERE id = ? AND company_id = ? LIMIT 1",
+      "SELECT id, paid_amount, customer_id, discount_total, shipping_total, status, invoice_number FROM invoices WHERE id = ? AND company_id = ? LIMIT 1",
       [id, companyId]
     );
     if (!existing) {
       conn.release();
       return NextResponse.json({ error: "Invoice not found." }, { status: 404 });
+    }
+    /* cancelled / exchange bills are history — they can't be edited */
+    if (existing.status === "cancelled" || String(existing.invoice_number).startsWith("EXC-")) {
+      conn.release();
+      return NextResponse.json(
+        { error: existing.status === "cancelled" ? "A cancelled bill can't be edited." : "An exchange bill can't be edited." },
+        { status: 409 }
+      );
     }
     await ensureStockTable();
     await ensurePosTables();
@@ -186,11 +194,19 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   const conn = await getPool().getConnection();
   try {
     const [[existing]] = await conn.query(
-      "SELECT id, customer_id FROM invoices WHERE id = ? AND company_id = ? LIMIT 1", [id, companyId]
+      "SELECT id, customer_id, status FROM invoices WHERE id = ? AND company_id = ? LIMIT 1", [id, companyId]
     ) as any[];
     if (!existing) {
       conn.release();
       return NextResponse.json({ error: "Invoice not found." }, { status: 404 });
+    }
+    /* bills are never deleted (only an unused draft can be) — cancel keeps the record */
+    if (existing.status !== "draft") {
+      conn.release();
+      return NextResponse.json(
+        { error: "Bills can't be deleted. Use Cancel — the bill stays on record with the reason." },
+        { status: 409 }
+      );
     }
 
     // Online order billed by this invoice: block once dispatched, otherwise send it back to "To bill"

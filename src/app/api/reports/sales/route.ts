@@ -4,7 +4,7 @@ import { requireUser, unauthorized } from "@/lib/requireUser";
 import { accessFromRequest, can } from "@/lib/access";
 import { cleanDate } from "@/lib/leadsTable";
 import { HANDOVER_TABLE, ensureHandoverTable } from "@/lib/orderHandover";
-import { ensurePosTables } from "@/lib/posSale";
+import { ensureSalesOpsTables } from "@/lib/salesOps";
 
 /* ============================================================
    GET /api/reports/sales?from=YYYY-MM-DD&to=YYYY-MM-DD
@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
     const user = await requireUser(req);
     if (!user) return unauthorized();
     await ensureHandoverTable();
-    await ensurePosTables();
+    await ensureSalesOpsTables();
     const sp = new URL(req.url).searchParams;
     const from = cleanDate(sp.get("from"));
     const to = cleanDate(sp.get("to"));
@@ -71,13 +71,17 @@ export async function GET(req: NextRequest) {
       advanceMethods,
       byCityOnline,
     ] = await Promise.all([
-      q(`SELECT COUNT(*) AS bills, COALESCE(SUM(i.grand_total),0) AS sales,
+      /* exchange bills (EXC-) only carry the price difference: counted in sales, not as new bills */
+      q(`SELECT SUM(i.invoice_number NOT LIKE 'EXC-%') AS bills, COALESCE(SUM(i.grand_total),0) AS sales,
                 COALESCE(SUM(i.paid_amount),0) AS paid, COALESCE(SUM(i.balance),0) AS outstanding,
-                COALESCE(AVG(i.grand_total),0) AS avg_bill, COUNT(DISTINCT i.customer_id) AS customers
+                COALESCE(AVG(CASE WHEN i.invoice_number NOT LIKE 'EXC-%' THEN i.grand_total END),0) AS avg_bill,
+                COUNT(DISTINCT i.customer_id) AS customers,
+                SUM(i.invoice_number LIKE 'EXC-%') AS exchanges
            FROM invoices i WHERE ${W}`),
-      q(`SELECT CASE WHEN h.id IS NULL THEN 'walk_in' ELSE 'online' END AS k,
-                COUNT(*) AS bills, COALESCE(SUM(i.grand_total),0) AS sales
+      q(`SELECT CASE WHEN h.id IS NULL OR il.invoice_id IS NOT NULL THEN 'walk_in' ELSE 'online' END AS k,
+                SUM(i.invoice_number NOT LIKE 'EXC-%') AS bills, COALESCE(SUM(i.grand_total),0) AS sales
            FROM invoices i LEFT JOIN ${HANDOVER_TABLE} h ON h.invoice_id = i.id
+           LEFT JOIN crm_invoice_leads il ON il.invoice_id = i.id
           WHERE ${W} GROUP BY k`),
       q(`SELECT DATE_FORMAT(i.invoice_date, '%Y-%m-%d') AS k, COUNT(*) AS bills, SUM(i.grand_total) AS sales
            FROM invoices i WHERE ${W} GROUP BY k ORDER BY k`),
@@ -130,6 +134,20 @@ export async function GET(req: NextRequest) {
             FROM ${HANDOVER_TABLE} h WHERE ${HW} GROUP BY k ORDER BY n DESC LIMIT 15`),
     ]);
 
+    /* money paid back to customers in the range (cancelled bills / exchanges) */
+    let refunds = { amount: 0, n: 0 };
+    try {
+      const [rf] = await pool.query(
+        `SELECT COALESCE(SUM(amount),0) AS amount, COUNT(*) AS n FROM crm_customer_refunds
+          WHERE company_id = ? ${from ? "AND refund_date >= ?" : ""} ${to ? "AND refund_date <= ?" : ""}`,
+        [user.company_id, ...(from ? [from] : []), ...(to ? [to] : [])]
+      );
+      const r0 = (rf as { amount: number; n: number }[])[0];
+      refunds = { amount: Number(r0?.amount || 0), n: Number(r0?.n || 0) };
+    } catch {
+      /* no refunds yet */
+    }
+
     /* credit still to collect: customers whose khata shows a balance due (all time) */
     const [codRows] = await pool.query(
       `SELECT COALESCE(SUM(c.current_balance),0) AS cod_due, COUNT(*) AS n
@@ -154,6 +172,7 @@ export async function GET(req: NextRequest) {
         advance_methods: advanceMethods,
         online_by_city: byCityOnline,
         cod_due: toNum(codRows as Row[])[0] || { cod_due: 0, n: 0 },
+        refunds,
       },
     });
   } catch (err) {

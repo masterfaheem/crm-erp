@@ -6,17 +6,24 @@ export const BRAND = {
   name: "TECHNO X LAPTOPS",
   tagline: "Laptop & Smart Devices",
   logo: "/technox-logo-invoice.png",
-  phones: ["0322-4350505", "0328-4350505"], // 3rd number: add when confirmed
+  phones: ["0328-4350505", "0322-4350505", "0303-4350505"],
   website: "https://technox.pk",
   websiteLabel: "technox.pk",
   address: "Siddique Trade Center, Lahore",
-  /* official social links — add when confirmed, e.g. { label: "Facebook", url: "https://..." } */
-  social: [] as { label: string; url: string }[],
+  /* every platform uses the same name; shown as a small badge + the name */
+  socialName: "Techno X Laptops",
+  social: [
+    { label: "Facebook", short: "f", color: "#1877F2" },
+    { label: "Instagram", short: "IG", color: "#E1306C" },
+    { label: "TikTok", short: "TT", color: "#111111" },
+    { label: "YouTube", short: "YT", color: "#FF0000" },
+  ],
   thankYou: "Thank you for choosing Techno X Laptops. We appreciate your trust.",
 };
 
 /* Laptop warranty shown on every product line */
-export const DEFAULT_ITEM_WARRANTY = "100 Days";
+export const WARRANTY_DAYS = 100;
+export const DEFAULT_ITEM_WARRANTY = `${WARRANTY_DAYS} Days`;
 
 export const WARRANTY_TERMS: { title: string; text: string }[] = [
   { title: "Laptop Warranty", text: "100 days warranty, subject to applicable terms and conditions." },
