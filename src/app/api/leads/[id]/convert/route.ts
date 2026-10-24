@@ -303,7 +303,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     /* ---------- lead -> won, keep delivery address on the lead ---------- */
     await conn.query(
       `UPDATE ${LEADS_TABLE}
-          SET status = 'won', lost_reason = NULL, lost_reason_other = NULL,
+          SET status = 'won', lost_reason = NULL, lost_reason_other = NULL, sales_channel = 'online',
               delivery_name = ?, delivery_phone = ?, delivery_phone2 = ?, delivery_house = ?,
               delivery_street = ?, delivery_area = ?, delivery_landmark = ?, delivery_city = ?
         WHERE id = ?`,
