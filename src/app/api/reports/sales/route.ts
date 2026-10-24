@@ -5,6 +5,7 @@ import { accessFromRequest, can } from "@/lib/access";
 import { cleanDate } from "@/lib/leadsTable";
 import { HANDOVER_TABLE, ensureHandoverTable } from "@/lib/orderHandover";
 import { ensureSalesOpsTables } from "@/lib/salesOps";
+import { exchangeNoSql } from "@/lib/format";
 
 /* ============================================================
    GET /api/reports/sales?from=YYYY-MM-DD&to=YYYY-MM-DD
@@ -72,14 +73,14 @@ export async function GET(req: NextRequest) {
       byCityOnline,
     ] = await Promise.all([
       /* exchange bills (EXC-) only carry the price difference: counted in sales, not as new bills */
-      q(`SELECT SUM(i.invoice_number NOT LIKE 'EXC-%') AS bills, COALESCE(SUM(i.grand_total),0) AS sales,
+      q(`SELECT SUM(NOT ${exchangeNoSql("i.invoice_number")}) AS bills, COALESCE(SUM(i.grand_total),0) AS sales,
                 COALESCE(SUM(i.paid_amount),0) AS paid, COALESCE(SUM(i.balance),0) AS outstanding,
-                COALESCE(AVG(CASE WHEN i.invoice_number NOT LIKE 'EXC-%' THEN i.grand_total END),0) AS avg_bill,
+                COALESCE(AVG(CASE WHEN NOT ${exchangeNoSql("i.invoice_number")} THEN i.grand_total END),0) AS avg_bill,
                 COUNT(DISTINCT i.customer_id) AS customers,
-                SUM(i.invoice_number LIKE 'EXC-%') AS exchanges
+                SUM(${exchangeNoSql("i.invoice_number")}) AS exchanges
            FROM invoices i WHERE ${W}`),
       q(`SELECT CASE WHEN h.id IS NULL OR il.invoice_id IS NOT NULL THEN 'walk_in' ELSE 'online' END AS k,
-                SUM(i.invoice_number NOT LIKE 'EXC-%') AS bills, COALESCE(SUM(i.grand_total),0) AS sales
+                SUM(NOT ${exchangeNoSql("i.invoice_number")}) AS bills, COALESCE(SUM(i.grand_total),0) AS sales
            FROM invoices i LEFT JOIN ${HANDOVER_TABLE} h ON h.invoice_id = i.id
            LEFT JOIN crm_invoice_leads il ON il.invoice_id = i.id
           WHERE ${W} GROUP BY k`),
