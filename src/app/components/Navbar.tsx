@@ -180,6 +180,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: ICONS.inventory,
     children: [
       { label: "Stock Levels", href: "/inventory" },
+      { label: "Stock Status & Reports", href: "/inventory/reports" },
       { label: "Warehouses", href: "/warehouses" },
       { label: "Adjustments", href: "/inventory/adjustments" },
       { label: "Transfers", href: "/inventory/transfers" },
@@ -387,7 +388,12 @@ export default function Navbar() {
     (href?: string) => {
       if (!href) return false;
       if (href === "/dashboard") return pathname === "/dashboard";
-      return pathname === href || pathname.startsWith(href + "/");
+      const hit = (h: string) => pathname === h || pathname.startsWith(h + "/");
+      if (!hit(href)) return false;
+      /* a longer menu link that also matches wins (e.g. /inventory/reports over /inventory) */
+      const longer = (items?: NavChild[]): boolean =>
+        (items || []).some((c) => (!!c.href && c.href.length > href.length && c.href.startsWith(href + "/") && hit(c.href)) || longer(c.children));
+      return !NAV_GROUPS.some((g) => longer(g.children));
     },
     [pathname]
   );
@@ -599,9 +605,7 @@ export default function Navbar() {
                   {!isCollapsed && isOpen && (
                     <ul className="mt-0.5 ml-4 space-y-0.5 border-l border-gray-100 pl-4">
                       {group.children.map((child) => {
-                        const childActive =
-                          pathname === child.href ||
-                          pathname.startsWith(child.href + "/");
+                        const childActive = isActive(child.href);
 
                         // Nested (3rd level)
                         if (child.children) {

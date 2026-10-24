@@ -116,6 +116,16 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
 
     discount_total += orderDiscount;
     grand_total = Math.max(0, grand_total - orderDiscount) + shipping;
+    if (status !== "draft") {
+      const noPrice = prepared.filter((p) => !(p.quantity > 0) || !(p.unit_price > 0));
+      if (noPrice.length || !(grand_total > 0)) {
+        conn.release();
+        return NextResponse.json(
+          { error: noPrice.length ? `Enter quantity and sale price for: ${noPrice.map((p) => p.description || "item").join(", ")}` : "Bill total is zero — enter the sale price." },
+          { status: 400 }
+        );
+      }
+    }
     // recompute balance from existing paid_amount
     const paid = Number(existing.paid_amount ?? 0);
     const balance = Math.max(0, grand_total - paid);

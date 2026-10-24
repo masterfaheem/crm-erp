@@ -67,6 +67,7 @@ interface CartItem {
   discount_percent: number;
   line_total: number;
   available_stock: number;
+  cost: number | null;
 }
 
 /* online order handed over from a won lead (see /dispatch) */
@@ -276,6 +277,7 @@ function POSContent() {
   const [showOrders, setShowOrders] = useState(false);
   const [orderCounts, setOrderCounts] = useState<Record<string, number>>({});
   const [boardKey, setBoardKey] = useState(0);
+  const [focusKey, setFocusKey] = useState("");
   /* walk-in lead details + one id per checkout (double-click / retry safe) */
   const [walkIn, setWalkIn] = useState<WalkInLead>(EMPTY_WALK_IN);
   const [leadMatch, setLeadMatch] = useState<LeadMatch | null>(null);
@@ -314,6 +316,7 @@ function POSContent() {
         tax_rate: Number(it.tax_rate) || 0,
         discount_percent: Number(it.discount_percent) || 0,
         available_stock: 0,
+        cost: null,
         line_total: 0,
       };
       item.line_total = computeLineTotal(item);
@@ -421,6 +424,8 @@ function POSContent() {
 
   /* ---------- Cart ops ---------- */
   const addToCart = useCallback((product: Product) => {
+    const newKey = genKey();
+    setFocusKey(newKey);
     setCart((prev) => {
       const existing = prev.find((x) => x.product_id === product.id);
       if (existing) {
@@ -442,7 +447,7 @@ function POSContent() {
         );
       }
       const item: CartItem = {
-        key: genKey(),
+        key: newKey,
         product_id: product.id,
         name: product.name,
         sku: product.sku,
@@ -454,6 +459,7 @@ function POSContent() {
         tax_rate: Number(product.tax_rate) || 0,
         discount_percent: Number(product.discount_percent) || 0,
         available_stock: Number(product.current_stock) || 0,
+        cost: product.purchase_price === null || product.purchase_price === undefined ? null : Number(product.purchase_price),
         line_total: 0,
       };
       item.line_total = computeLineTotal(item);
@@ -535,6 +541,8 @@ function POSContent() {
   const paid = Number(amountPaid) || 0;
   const changeDue = Math.max(0, paid - totals.grandTotal);
   const balanceDue = Math.max(0, totals.grandTotal - paid);
+  /* every line needs a sale price before charging */
+  const missingPrice = cart.filter((it) => !(Number(it.unit_price) > 0));
 
   /* ---------- Submit ---------- */
   const handleSubmit = async () => {
@@ -545,6 +553,14 @@ function POSContent() {
     }
     if (cart.length === 0) {
       setError("Cart is empty.");
+      return;
+    }
+    if (missingPrice.length) {
+      setError(`Enter the sale price for: ${missingPrice.map((it) => it.name).join(", ")}`);
+      return;
+    }
+    if (paymentMethod !== "cash" && paymentMethod !== "credit" && paid > totals.grandTotal + 0.001) {
+      setError(`Received is more than the bill. For this payment method enter the exact amount received (max ${formatCurrency(totals.grandTotal)}). Extra money = record it as an advance in Customer Payments.`);
       return;
     }
     if (!linkedOrder && !walkIn.lead_id && !walkIn.source) {
@@ -643,8 +659,8 @@ function POSContent() {
         invoice_number: json.data?.invoice_number ?? "INV-XXX",
         customer_name: selectedCustomer.name,
         grand_total: totals.grandTotal,
-        paid_amount: paid,
-        change_due: changeDue,
+        paid_amount: paymentMethod === "credit" ? 0 : Math.min(paid, totals.grandTotal),
+        change_due: paymentMethod === "cash" ? changeDue : 0,
         payment_method: paymentMethod,
         created_at: new Date().toISOString(),
       });
@@ -922,14 +938,18 @@ function POSContent() {
                             </div>
                             <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[11px] text-gray-500">
                               <span className="font-mono">{it.sku}</span>
-                              <span>·</span>
-                              <span>{formatCurrency(it.unit_price)}</span>
-                              <span>·</span>
-                              <span
-                                className={stockColor(it.available_stock)}
-                              >
-                                Stock: {it.available_stock}
-                              </span>
+                              {!linkedOrder && (
+                                <>
+                                  <span>·</span>
+                                  <span className={stockColor(it.available_stock)}>Stock: {it.available_stock}</span>
+                                </>
+                              )}
+                              {it.cost !== null && it.cost > 0 && (
+                                <>
+                                  <span>·</span>
+                                  <span>Cost {formatCurrency(it.cost)}</span>
+                                </>
+                              )}
                             </div>
                           </div>
                           <button
@@ -953,8 +973,8 @@ function POSContent() {
                           </button>
                         </div>
 
-                        {/* Qty + line total */}
-                        <div className="mt-2 flex items-center justify-between">
+                        {/* Qty · sale price · line total */}
+                        <div className="mt-2 flex items-center justify-between gap-2">
                           <div className="inline-flex items-center rounded-md border border-gray-300">
                             <button
                               type="button"
@@ -988,7 +1008,7 @@ function POSContent() {
                                   ),
                                 })
                               }
-                              className="w-14 border-x border-gray-300 bg-white px-1 py-1 text-center text-sm outline-none focus:bg-[#17D65D]/5"
+                              className="w-12 border-x border-gray-300 bg-white px-1 py-1 text-center text-sm outline-none focus:bg-[#17D65D]/5"
                             />
                             <button
                               type="button"
@@ -1010,10 +1030,45 @@ function POSContent() {
                               </svg>
                             </button>
                           </div>
-                          <div className="text-sm font-semibold text-gray-900">
+                          <label className="flex min-w-0 flex-1 items-center gap-1">
+                            <span className="whitespace-nowrap text-[11px] font-medium text-gray-500">Price Rs</span>
+                            <input
+                              type="number"
+                              min="0"
+                              step="1"
+                              inputMode="decimal"
+                              autoFocus={it.key === focusKey && !(it.unit_price > 0)}
+                              placeholder="Sale price"
+                              value={it.unit_price > 0 ? it.unit_price : ""}
+                              onChange={(e) =>
+                                updateCartItem(it.key, {
+                                  unit_price: Math.max(0, Number(e.target.value) || 0),
+                                })
+                              }
+                              className={`w-full min-w-0 rounded-md border px-2 py-1 text-right text-sm font-semibold outline-none focus:ring-2 ${
+                                it.unit_price > 0
+                                  ? "border-gray-300 focus:border-[#17D65D] focus:ring-[#17D65D]/20"
+                                  : "border-red-400 bg-red-50 focus:border-red-500 focus:ring-red-200"
+                              }`}
+                            />
+                          </label>
+                          <div className="w-24 text-right text-sm font-semibold text-gray-900">
                             {formatCurrency(computeLineTotal(it))}
                           </div>
                         </div>
+                        {!(it.unit_price > 0) && (
+                          <p className="mt-1 text-[11px] font-medium text-red-600">Enter the sale price</p>
+                        )}
+                        {it.unit_price > 0 && it.cost !== null && it.cost > 0 && it.unit_price < it.cost && (
+                          <p className="mt-1 text-[11px] font-medium text-amber-700">
+                            Below cost ({formatCurrency(it.cost)}) — this sale is a loss
+                          </p>
+                        )}
+                        {!linkedOrder && it.quantity > it.available_stock && (
+                          <p className="mt-1 text-[11px] font-medium text-amber-700">
+                            Only {it.available_stock} in stock — stock will go negative
+                          </p>
+                        )}
                       </li>
                     ))}
                   </ul>
@@ -1103,7 +1158,7 @@ function POSContent() {
                       if (paymentMethod === "credit") setPaymentMethod("bank_transfer");
                       setShowCheckout(true);
                     }}
-                    disabled={!selectedCustomer}
+                    disabled={!selectedCustomer || missingPrice.length > 0 || !(totals.grandTotal > 0)}
                     className={`${btnPrimary} w-full py-3 text-base`}
                   >
                     <svg
@@ -1121,11 +1176,15 @@ function POSContent() {
                     </svg>
                     Charge {formatCurrency(totals.grandTotal)}
                   </button>
-                  {!selectedCustomer && (
+                  {!selectedCustomer ? (
                     <p className="mt-2 text-center text-[11px] text-amber-600">
                       Select a customer to continue
                     </p>
-                  )}
+                  ) : missingPrice.length > 0 ? (
+                    <p className="mt-2 text-center text-[11px] text-red-600">
+                      Enter the sale price of every item to continue
+                    </p>
+                  ) : null}
                 </div>
               </>
             )}
@@ -2039,7 +2098,7 @@ function CheckoutModal({
           {paymentMethod !== "credit" && (
             <div>
               <label className="mb-1.5 block text-xs font-medium text-gray-700">
-                Amount received
+                {paymentMethod === "cash" ? "Cash received from customer" : "Amount received now"}
               </label>
               <input
                 type="number"
@@ -2061,15 +2120,21 @@ function CheckoutModal({
                   </button>
                 ))}
               </div>
+              {paymentMethod !== "cash" && changeDue > 0 && (
+                <div className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                  This is more than the bill. Enter the exact amount received ({formatCurrency(totals.grandTotal)}). Extra
+                  money is recorded as an advance from Customer Payments.
+                </div>
+              )}
               <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
                 <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
-                  <div className="text-gray-500">{paymentMethod === "cash" ? "Change to return" : "Extra received"}</div>
+                  <div className="text-gray-500">{paymentMethod === "cash" ? "Change to give back" : "Saved as paid"}</div>
                   <div className="mt-0.5 text-sm font-semibold text-[#0fa846]">
-                    {formatCurrency(changeDue)}
+                    {formatCurrency(paymentMethod === "cash" ? changeDue : Math.min(Number(amountPaid) || 0, totals.grandTotal))}
                   </div>
                 </div>
                 <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
-                  <div className="text-gray-500">Credit (balance due)</div>
+                  <div className="text-gray-500">Goes to khata (balance due)</div>
                   <div
                     className={`mt-0.5 text-sm font-semibold ${
                       balanceDue > 0 ? "text-red-600" : "text-gray-700"
@@ -2379,6 +2444,14 @@ function SuccessModal({
               {formatCurrency(result.paid_amount)}
             </span>
           </div>
+          {result.grand_total - result.paid_amount > 0.004 && (
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-gray-500">Balance on khata</span>
+              <span className="font-semibold text-red-600">
+                {formatCurrency(result.grand_total - result.paid_amount)}
+              </span>
+            </div>
+          )}
           {result.lead_text && (
             <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
               CRM lead: {result.lead_text}
@@ -2397,7 +2470,7 @@ function SuccessModal({
           {result.change_due > 0 && (
             <div className="flex items-center justify-between rounded-md border border-[#17D65D]/30 bg-[#17D65D]/5 px-3 py-2">
               <span className="text-sm font-medium text-[#0fa846]">
-                Change due
+                Give back to customer (change)
               </span>
               <span className="text-lg font-bold text-[#0fa846]">
                 {formatCurrency(result.change_due)}
