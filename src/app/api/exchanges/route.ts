@@ -10,6 +10,7 @@ import {
   listExchanges,
   loadExchangeSource,
 } from "@/lib/salesOps";
+import { writeAudit } from "@/lib/audit";
 
 /* ============================================================
    GET  /api/exchanges?invoice=<INV-2026-0012 | id>   -> the bill to exchange
@@ -78,6 +79,7 @@ export async function POST(req: NextRequest) {
     const result = await createExchange(conn, user, value);
     if (clientRef) await finishClientRef(conn, user.company_id, clientRef, result.invoice_id);
     await conn.commit();
+    await writeAudit(req, user, "exchange_create", "invoice", result.invoice_id);
     return NextResponse.json({ data: result }, { status: 201 });
   } catch (e) {
     try { await conn.rollback(); } catch {}
