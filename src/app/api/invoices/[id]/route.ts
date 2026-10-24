@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isExchangeNo } from "@/lib/format";
 import { query, getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
 import { ensureStockTable, recalcCustomer, recalcInvoice, removeDocStock, syncDocStock } from "@/lib/ledger";
@@ -68,7 +69,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       return NextResponse.json({ error: "Invoice not found." }, { status: 404 });
     }
     /* cancelled / exchange bills are history — they can't be edited */
-    if (existing.status === "cancelled" || String(existing.invoice_number).startsWith("EXC-")) {
+    if (existing.status === "cancelled" || isExchangeNo(existing.invoice_number)) {
       conn.release();
       return NextResponse.json(
         { error: existing.status === "cancelled" ? "A cancelled bill can't be edited." : "An exchange bill can't be edited." },
