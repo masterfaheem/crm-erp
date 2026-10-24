@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import Navbar from "@/app/components/Navbar";
 import KhataCard from "./KhataCard";
+import ExchangeHistory from "./ExchangeHistory";
 
 /* ============================================================
    TYPES
@@ -389,6 +390,7 @@ function CustomerDetailContent() {
 
       {/* ============ KHATA ============ */}
       <KhataCard customerId={customer.id} />
+      <ExchangeHistory customerId={customer.id} />
 
       {/* ============ MAIN GRID ============ */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
