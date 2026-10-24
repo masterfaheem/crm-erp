@@ -14,3 +14,9 @@ export function formatDate(d: string | null): string {
 export function prettyStatus(s: string): string {
   return s.replace(/_/g, " ");
 }
+
+/* Exchange bills: TX-EXC-000001 (older: EXC-2026-0001) */
+export function isExchangeNo(n: unknown): boolean {
+  return /^(TX-)?EXC-/.test(String(n || ""));
+}
+export const exchangeNoSql = (col: string) => `(${col} LIKE 'EXC-%' OR ${col} LIKE 'TX-EXC-%')`;

@@ -141,11 +141,46 @@ export async function loadAccess(userId: number): Promise<Access | null> {
   return access;
 }
 
+/* ---------------- live sessions ----------------
+   A token only works while its row is in `sessions` (written at login).
+   Logout, password change or deactivation removes the row, so the old
+   token stops working at once. Re-checked every 5s per token. */
+const sessionCache = new Map<string, { at: number; ok: boolean }>();
+const SESSION_TTL_MS = 5_000; // short: the page proxy keeps its own copy, so logout takes effect within seconds
+
+export function forgetSession(token: string) {
+  sessionCache.delete(token);
+}
+
+async function sessionIsLive(token: string, userId: number): Promise<boolean> {
+  const hit = sessionCache.get(token);
+  if (hit && Date.now() - hit.at < SESSION_TTL_MS) return hit.ok;
+  let ok = true;
+  try {
+    const [rows] = await getPool().query(
+      /* (prefix match too, in case the column ever stored a shortened token) */
+      `SELECT 1 FROM sessions
+        WHERE user_id = ? AND (token = ? OR (CHAR_LENGTH(token) >= 60 AND ? LIKE CONCAT(token, '%')))
+          AND (expires_at IS NULL OR expires_at > NOW()) LIMIT 1`,
+      [userId, token, token]
+    );
+    ok = (rows as unknown[]).length > 0;
+  } catch (e) {
+    /* sessions table unreadable: don't lock everyone out, the JWT is still verified */
+    console.error("[access] session check failed", e);
+    ok = true;
+  }
+  if (sessionCache.size > 5000) sessionCache.clear();
+  sessionCache.set(token, { at: Date.now(), ok });
+  return ok;
+}
+
 export async function accessFromRequest(req: NextRequest): Promise<Access | null> {
   const token = req.cookies.get(SESSION_COOKIE_NAME)?.value;
   if (!token) return null;
   const payload = verifySession(token);
   if (!payload) return null;
+  if (!(await sessionIsLive(token, Number(payload.userId)))) return null;
   return loadAccess(Number(payload.userId));
 }
 

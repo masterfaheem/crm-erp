@@ -1,4 +1,5 @@
 import { getPool } from "@/lib/db";
+import { isExchangeNo } from "@/lib/format";
 
 /* ============================================================
    LEDGER HELPERS — invoices, payments, customer balance, stock
@@ -78,7 +79,7 @@ export async function recalcInvoice(conn: Conn, invoiceId: number, companyId: nu
 
 /* a bill whose total is negative is a credit to the customer (exchange to a cheaper model) */
 function invoiceIsCredit(total: number, invoiceNumber: unknown) {
-  return total < 0 || (total === 0 && String(invoiceNumber || "").startsWith("EXC-"));
+  return total < 0 || (total === 0 && isExchangeNo(invoiceNumber));
 }
 
 /* ---------------- customer khata ----------------
