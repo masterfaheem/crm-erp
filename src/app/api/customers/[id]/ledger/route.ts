@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isExchangeNo } from "@/lib/format";
 import { query } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
 import { ensureLedgerReady } from "@/lib/ledgerSetup";
@@ -69,7 +70,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
         ref_id: Number(b.id),
         number: String(b.num),
         /* an exchange to a cheaper model is a credit to the customer */
-        description: String(b.num).startsWith("EXC-")
+        description: isExchangeNo(b.num)
           ? Number(b.amount) < 0 ? "Exchange credit" : "Exchange difference"
           : "Sale bill",
         debit: Math.max(0, Number(b.amount) || 0),
