@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { query, getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
 import { ensureStockTable, STOCK_SQL, STOCK_TABLE } from "@/lib/ledger";
+import { ensureCostingTables } from "@/lib/costing";
 
 /* GET  /api/inventory/moves?product_id=  -> stock history of one product
    POST /api/inventory/moves                -> manual stock adjustment
@@ -46,6 +47,7 @@ export async function POST(req: NextRequest) {
   const companyId = user.company_id;
   try {
     await ensureStockTable();
+    await ensureCostingTables();
     const body = await req.json().catch(() => ({}));
     const productId = Number(body.product_id);
     const mode = String(body.mode || "add");
@@ -61,10 +63,10 @@ export async function POST(req: NextRequest) {
     try {
       await conn.beginTransaction();
       const [[p]] = (await conn.query(
-        `SELECT p.id, p.name, ${STOCK_SQL} AS current_stock FROM products p
+        `SELECT p.id, p.name, p.purchase_price, ${STOCK_SQL} AS current_stock FROM products p
           WHERE p.id = ? AND p.company_id = ? FOR UPDATE`,
         [productId, companyId]
-      )) as unknown as [Array<{ id: number; name: string; current_stock: number }>];
+      )) as unknown as [Array<{ id: number; name: string; purchase_price: number | null; current_stock: number }>];
       if (!p) {
         await conn.rollback();
         return NextResponse.json({ error: "Product not found." }, { status: 404 });
@@ -76,9 +78,9 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Stock is already at that quantity." }, { status: 400 });
       }
       await conn.query(
-        `INSERT INTO ${STOCK_TABLE} (company_id, product_id, qty, move_type, ref_type, note, created_by)
-         VALUES (?, ?, ?, 'adjustment', 'adjustment', ?, ?)`,
-        [companyId, productId, change, note, user.id]
+        `INSERT INTO ${STOCK_TABLE} (company_id, product_id, qty, unit_cost, move_type, ref_type, note, created_by)
+         VALUES (?, ?, ?, ?, 'adjustment', 'adjustment', ?, ?)`,
+        [companyId, productId, change, Number(p.purchase_price) || null, note, user.id]
       );
       await conn.commit();
       return NextResponse.json({ success: true, change, current_stock: current + change });
