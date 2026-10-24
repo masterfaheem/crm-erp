@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Navbar from "@/app/components/Navbar";
-import { formatCurrency, formatDate, prettyStatus } from "@/lib/format";
+import { formatCurrency, formatDate, isExchangeNo, prettyStatus } from "@/lib/format";
 import { useAccess } from "@/app/components/useAccess";
 
 interface CustomerLite { id: number; name: string; }
@@ -227,12 +227,12 @@ function InvoicesContent() {
                     {r.status !== "cancelled" && r.status !== "draft" && can("sales.exchange") && (
                       <a href={`/exchange?invoice=${r.id}`} className="ml-3 text-sm font-medium text-blue-700 hover:text-blue-900">Exchange</a>
                     )}
-                    {r.status !== "cancelled" && !r.invoice_number.startsWith("EXC-") && (
+                    {r.status !== "cancelled" && !isExchangeNo(r.invoice_number) && (
                       <button onClick={() => { setEditing(r); setShowModal(true); }} className="ml-3 text-sm font-medium text-[#0fa846] hover:text-[#0c8a3a]">Edit</button>
                     )}
                     {r.status === "draft" ? (
                       <button onClick={() => handleDelete(r)} className="ml-3 text-sm font-medium text-gray-700 hover:text-red-600">Delete</button>
-                    ) : r.status !== "cancelled" && !r.invoice_number.startsWith("EXC-") && can("sales.delete") ? (
+                    ) : r.status !== "cancelled" && !isExchangeNo(r.invoice_number) && can("sales.delete") ? (
                       <button onClick={() => setCancelling(r)} className="ml-3 text-sm font-medium text-gray-700 hover:text-red-600">Cancel</button>
                     ) : null}
                   </td>
