@@ -13,7 +13,7 @@ import {
   finishClientRef,
   invoiceForClientRef,
   linkWalkInLead,
-  lockedDocNumber,
+  lockedSeqNumber,
 } from "@/lib/posSale";
 import { cleanWalkInDelivery, ensureSalesOpsTables, recordWalkInDelivery } from "@/lib/salesOps";
 
@@ -239,7 +239,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const invoice_number = await lockedDocNumber(conn, "invoices", "invoice_number", "INV", companyId);
+    const invoice_number = await lockedSeqNumber(conn, "invoices", "invoice_number", "TX-INV", companyId);
 
     const [ins] = await conn.query<any>(
       `INSERT INTO invoices
