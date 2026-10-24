@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { query, getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
 import { ensureStockTable, removeDocStock, syncDocStock } from "@/lib/ledger";
+import { ensureCostingTables, productsOnPurchaseBill, recomputeAvgCost } from "@/lib/costing";
 
 export async function GET(
   req: NextRequest,
@@ -120,7 +121,9 @@ export async function PUT(
     const balance = Math.max(0, grand_total - paid_amount);
 
     await ensureStockTable();
+    await ensureCostingTables();
     await conn.beginTransaction();
+    const productsBefore = await productsOnPurchaseBill(conn, id);
 
     await conn.query(
       `UPDATE purchase_bills SET
@@ -156,6 +159,8 @@ export async function PUT(
 
     // re-sync stock in (+qty) from the edited lines
     await syncDocStock(conn, companyId, "purchase_bill", id, user.id);
+    // product cost = weighted average (products removed from the bill are re-averaged too)
+    await recomputeAvgCost(conn, companyId, [...productsBefore, ...(await productsOnPurchaseBill(conn, id))]);
 
     await conn.commit();
     conn.release();
@@ -197,12 +202,15 @@ export async function DELETE(
     if (!existing) return NextResponse.json({ error: "Purchase bill not found." }, { status: 404 });
 
     await ensureStockTable();
+    await ensureCostingTables();
     const conn = await getPool().getConnection();
     try {
       await conn.beginTransaction();
+      const products = await productsOnPurchaseBill(conn, id);
       await removeDocStock(conn, companyId, "purchase_bill", id);
       await conn.query("DELETE FROM purchase_bill_items WHERE purchase_bill_id = ?", [id]);
       await conn.query("DELETE FROM purchase_bills WHERE id = ? AND company_id = ?", [id, companyId]);
+      await recomputeAvgCost(conn, companyId, products);
       await conn.commit();
     } catch (e) {
       await conn.rollback();
