@@ -3,10 +3,30 @@ import { query, getPool } from "@/lib/db";
 import { ensureLedgerReady } from "@/lib/ledgerSetup";
 import { requireUser, unauthorized } from "@/lib/requireUser";
 import { accessFromRequest, can } from "@/lib/access";
-import { addCustomerPayment, ensureStockTable, recalcInvoice, syncDocStock, nextDocNumber } from "@/lib/ledger";
+import { addCustomerPayment, ensureStockTable, recalcInvoice, syncDocStock } from "@/lib/ledger";
+import {
+  claimClientRef,
+  cleanClientRef,
+  cleanWalkInLead,
+  currentCosts,
+  ensurePosTables,
+  finishClientRef,
+  invoiceForClientRef,
+  linkWalkInLead,
+  lockedDocNumber,
+} from "@/lib/posSale";
 
-async function nextInvoiceNumber(companyId: number): Promise<string> {
-  return nextDocNumber("invoices", "invoice_number", "INV", companyId);
+/* the saved bill, as returned after create */
+async function loadCreated(invoiceId: number, companyId: number) {
+  const [row] = await query<any[]>(
+    `SELECT i.*, c.name AS customer_name, so.order_number AS so_number
+       FROM invoices i
+       LEFT JOIN customers c ON c.id = i.customer_id
+       LEFT JOIN sales_orders so ON so.id = i.sales_order_id
+      WHERE i.id = ? AND i.company_id = ?`,
+    [invoiceId, companyId]
+  );
+  return row;
 }
 
 export async function GET(req: NextRequest) {
@@ -87,6 +107,9 @@ export async function POST(req: NextRequest) {
     const notes = body.notes ? String(body.notes).trim() : null;
     const terms = body.terms ? String(body.terms).trim() : null;
     const sales_order_id = body.sales_order_id ? Number(body.sales_order_id) : null;
+    /* POS sends one id per checkout: a double-click / retry returns the same bill */
+    const clientRef = cleanClientRef(body.client_ref);
+    const walkInLead = cleanWalkInLead(body.walk_in_lead);
 
     const items: Array<{
       product_id: number | null; description: string;
@@ -142,7 +165,28 @@ export async function POST(req: NextRequest) {
     grand_total = Math.round(grand_total * 100) / 100;
 
     await ensureStockTable();
+    await ensurePosTables();
+    if (clientRef) {
+      const doneId = await invoiceForClientRef(companyId, clientRef);
+      if (doneId) {
+        conn.release();
+        return NextResponse.json({ data: await loadCreated(doneId, companyId), duplicate: true }, { status: 200 });
+      }
+    }
     await conn.beginTransaction();
+    if (clientRef) {
+      try {
+        await claimClientRef(conn, companyId, clientRef, user.id);
+      } catch (e) {
+        if ((e as { code?: string })?.code !== "ER_DUP_ENTRY") throw e;
+        await conn.rollback(); conn.release();
+        const doneId = await invoiceForClientRef(companyId, clientRef);
+        if (doneId) {
+          return NextResponse.json({ data: await loadCreated(doneId, companyId), duplicate: true }, { status: 200 });
+        }
+        return NextResponse.json({ error: "This bill is already being saved. Please wait a moment." }, { status: 409 });
+      }
+    }
 
     /* ---- Online order (lead handover): bill only once, its payment is linked ---- */
     let handover: {
@@ -187,7 +231,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const invoice_number = await nextInvoiceNumber(companyId);
+    const invoice_number = await lockedDocNumber(conn, "invoices", "invoice_number", "INV", companyId);
 
     const [ins] = await conn.query<any>(
       `INSERT INTO invoices
@@ -219,14 +263,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    /* cost of each item at the time of sale (for correct profit later) */
+    const costs = await currentCosts(conn, companyId, prepared.map((p) => Number(p.product_id) || 0));
     for (const p of prepared) {
       await conn.query(
         `INSERT INTO invoice_items
            (invoice_id, product_id, description, quantity, unit_price, tax_rate, discount_percent,
-            line_subtotal, line_tax, line_discount, line_total)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            line_subtotal, line_tax, line_discount, line_total, unit_cost)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [invoiceId, p.product_id, p.description, p.quantity, p.unit_price, p.tax_rate,
-         p.discount_percent, p.line_subtotal, p.line_tax, p.line_discount, p.line_total]
+         p.discount_percent, p.line_subtotal, p.line_tax, p.line_discount, p.line_total,
+         costs.get(Number(p.product_id) || 0) ?? null]
       );
     }
 
@@ -274,17 +321,30 @@ export async function POST(req: NextRequest) {
     await syncDocStock(conn, companyId, "invoice", invoiceId, user.id);
     await recalcInvoice(conn, invoiceId, companyId);
 
+    /* ---- walk-in sale -> CRM lead marked Won (online orders already have their lead) ----
+       Runs in a savepoint: if linking the lead fails, the bill is still saved and the
+       cashier is told, so the counter never gets stuck. */
+    let lead: { lead_id: number; lead_number: string; created: boolean } | null = null;
+    let leadWarning: string | null = null;
+    if (!sales_order_id && body.walk_in_lead) {
+      await conn.query("SAVEPOINT walk_in_lead");
+      try {
+        lead = await linkWalkInLead(conn, user, { customerId: customer_id, invoiceId, invoiceNumber: invoice_number, input: walkInLead });
+      } catch (e) {
+        console.error("[POST /api/invoices] walk-in lead link failed", e);
+        await conn.query("ROLLBACK TO SAVEPOINT walk_in_lead");
+        leadWarning = "Bill saved, but the CRM lead could not be linked. Please add / update the lead manually.";
+      }
+    }
+
+    if (clientRef) await finishClientRef(conn, companyId, clientRef, invoiceId);
+
     await conn.commit(); conn.release();
 
-    const [row] = await query<any[]>(
-      `SELECT i.*, c.name AS customer_name, so.order_number AS so_number
-         FROM invoices i
-         LEFT JOIN customers c ON c.id = i.customer_id
-         LEFT JOIN sales_orders so ON so.id = i.sales_order_id
-        WHERE i.id = ? AND i.company_id = ?`,
-      [invoiceId, companyId]
+    return NextResponse.json(
+      { data: await loadCreated(invoiceId, companyId), lead, lead_warning: leadWarning },
+      { status: 201 }
     );
-    return NextResponse.json({ data: row }, { status: 201 });
   } catch (err) {
     try { await conn.rollback(); } catch {}
     conn.release();
