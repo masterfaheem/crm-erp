@@ -57,12 +57,18 @@ export async function ensurePosTables(): Promise<void> {
       lead_id INT UNSIGNED NOT NULL,
       sales_channel VARCHAR(20) NOT NULL,
       lead_created TINYINT(1) NOT NULL DEFAULT 0,
+      prev_status VARCHAR(20) NULL,
       created_by INT UNSIGNED NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       KEY idx_lead (lead_id),
       KEY idx_company_channel (company_id, sales_channel)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+  /* lead status before the sale (restored if the bill is cancelled) */
+  const [plc] = await pool.query(`SHOW COLUMNS FROM ${INVOICE_LEAD_TABLE} LIKE 'prev_status'`);
+  if (!(plc as unknown[]).length) {
+    await pool.query(`ALTER TABLE ${INVOICE_LEAD_TABLE} ADD COLUMN prev_status VARCHAR(20) NULL AFTER lead_created`);
+  }
   /* cost of each sold unit, saved at the time of sale */
   const [cols] = await pool.query("SHOW COLUMNS FROM invoice_items LIKE 'unit_cost'");
   if (!(cols as unknown[]).length) {
@@ -212,23 +218,23 @@ export async function linkWalkInLead(
   p: { customerId: number; invoiceId: number; invoiceNumber: string; input: WalkInLeadInput }
 ): Promise<{ lead_id: number; lead_number: string; created: boolean }> {
   const companyId = user.company_id;
-  let lead: { id: number; lead_number: string } | null = null;
+  let lead: { id: number; lead_number: string; status: string } | null = null;
 
   if (p.input.lead_id) {
     const [rows] = await conn.query(
-      `SELECT id, lead_number FROM ${LEADS_TABLE} WHERE id = ? AND company_id = ? AND status <> 'won' FOR UPDATE`,
+      `SELECT id, lead_number, status FROM ${LEADS_TABLE} WHERE id = ? AND company_id = ? AND status <> 'won' FOR UPDATE`,
       [p.input.lead_id, companyId]
     );
-    lead = (rows as { id: number; lead_number: string }[])[0] || null;
+    lead = (rows as { id: number; lead_number: string; status: string }[])[0] || null;
   }
   if (!lead) {
     const open = await openLeadsForCustomer(conn, companyId, p.customerId);
     if (open.length) {
       const [rows] = await conn.query(
-        `SELECT id, lead_number FROM ${LEADS_TABLE} WHERE id = ? FOR UPDATE`,
+        `SELECT id, lead_number, status FROM ${LEADS_TABLE} WHERE id = ? FOR UPDATE`,
         [open[0].id]
       );
-      lead = (rows as { id: number; lead_number: string }[])[0] || null;
+      lead = (rows as { id: number; lead_number: string; status: string }[])[0] || null;
     }
   }
 
@@ -245,9 +251,9 @@ export async function linkWalkInLead(
       [p.input.source, p.input.profession, p.input.profession_other, user.id, lead.id, companyId]
     );
     await conn.query(
-      `INSERT INTO ${INVOICE_LEAD_TABLE} (invoice_id, company_id, lead_id, sales_channel, lead_created, created_by)
-       VALUES (?, ?, ?, 'walk_in', 0, ?)`,
-      [p.invoiceId, companyId, lead.id, user.id]
+      `INSERT INTO ${INVOICE_LEAD_TABLE} (invoice_id, company_id, lead_id, sales_channel, lead_created, prev_status, created_by)
+       VALUES (?, ?, ?, 'walk_in', 0, ?, ?)`,
+      [p.invoiceId, companyId, lead.id, lead.status || null, user.id]
     );
     return { lead_id: lead.id, lead_number: lead.lead_number, created: false };
   }

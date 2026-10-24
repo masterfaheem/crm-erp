@@ -31,6 +31,22 @@ export const METHOD_LABEL: Record<string, string> = {
   none: "Not paid yet",
 };
 
+/* ---------------- refunds (money paid back to a customer) ----------------
+   Kept in crm_customer_refunds (see salesOps.ts). 0 if the table doesn't exist yet. */
+export const REFUND_TABLE = "crm_customer_refunds";
+async function refundTotal(conn: Conn, companyId: number, col: "invoice_id" | "customer_id", id: number) {
+  try {
+    const [[r]] = await conn.query(
+      `SELECT COALESCE(SUM(amount), 0) AS t FROM ${REFUND_TABLE} WHERE company_id = ? AND ${col} = ?`,
+      [companyId, id]
+    );
+    return Number(r?.t || 0);
+  } catch (e) {
+    if ((e as { code?: string })?.code === "ER_NO_SUCH_TABLE") return 0;
+    throw e;
+  }
+}
+
 /* ---------------- invoice paid / balance ---------------- */
 export async function recalcInvoice(conn: Conn, invoiceId: number, companyId: number) {
   const [[sum]] = await conn.query(
@@ -38,9 +54,10 @@ export async function recalcInvoice(conn: Conn, invoiceId: number, companyId: nu
       WHERE company_id = ? AND invoice_id = ? AND status = 'cleared'`,
     [companyId, invoiceId]
   );
-  const paidRaw = Number(sum?.paid ?? 0);
+  /* paid on this bill = received - refunded */
+  const paidRaw = Number(sum?.paid ?? 0) - (await refundTotal(conn, companyId, "invoice_id", invoiceId));
   const [[inv]] = await conn.query(
-    "SELECT grand_total, status, customer_id FROM invoices WHERE id = ? AND company_id = ?",
+    "SELECT grand_total, status, customer_id, invoice_number FROM invoices WHERE id = ? AND company_id = ?",
     [invoiceId, companyId]
   );
   if (!inv) return;
@@ -49,6 +66,7 @@ export async function recalcInvoice(conn: Conn, invoiceId: number, companyId: nu
   const balance = Math.max(0, Math.round((total - paid) * 100) / 100);
   let status = "unpaid";
   if (paid >= total && total > 0) status = "paid";
+  else if (balance === 0 && invoiceIsCredit(total, inv.invoice_number)) status = "paid"; // exchange: nothing to collect
   else if (paid > 0) status = "partially_paid";
   if (inv.status === "cancelled" || inv.status === "draft") status = inv.status;
   await conn.query(
@@ -56,6 +74,11 @@ export async function recalcInvoice(conn: Conn, invoiceId: number, companyId: nu
     [paid, balance, status, invoiceId, companyId]
   );
   if (inv.customer_id) await recalcCustomer(conn, companyId, Number(inv.customer_id));
+}
+
+/* a bill whose total is negative is a credit to the customer (exchange to a cheaper model) */
+function invoiceIsCredit(total: number, invoiceNumber: unknown) {
+  return total < 0 || (total === 0 && String(invoiceNumber || "").startsWith("EXC-"));
 }
 
 /* ---------------- customer khata ----------------
@@ -80,7 +103,8 @@ export async function recalcCustomer(conn: Conn, companyId: number, customerId: 
       WHERE company_id = ? AND customer_id = ? AND status = 'cleared'`,
     [companyId, customerId]
   );
-  const net = Math.round((opening + Number(inv.t) - Number(pay.t)) * 100) / 100;
+  const refunded = await refundTotal(conn, companyId, "customer_id", customerId);
+  const net = Math.round((opening + Number(inv.t) - Number(pay.t) + refunded) * 100) / 100;
   await conn.query("UPDATE customers SET current_balance = ? WHERE id = ? AND company_id = ?", [
     net,
     customerId,
