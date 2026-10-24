@@ -32,6 +32,18 @@ export async function POST(req: NextRequest) {
       ? String(body.branch_name).trim()
       : "Head Office";
 
+    /* ---------- Sign-up is only for the very first setup ----------
+       Once the CRM has an account, new team members are added by an admin
+       (Settings > Team & Access). An open sign-up would let anyone on the
+       internet create a Super Admin login. */
+    const [[existingUsers]] = (await conn.query("SELECT COUNT(*) AS n FROM users")) as unknown as [[{ n: number }]];
+    if (Number(existingUsers?.n || 0) > 0) {
+      return NextResponse.json(
+        { message: "Sign-up is closed. Ask your admin to add you from Team & Access." },
+        { status: 403 }
+      );
+    }
+
     /* ---------- Validation ---------- */
     if (!companyName || !name || !email || !password) {
       return NextResponse.json(
