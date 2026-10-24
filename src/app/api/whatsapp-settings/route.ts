@@ -43,8 +43,17 @@ export async function GET(request: NextRequest) {
 
     // Parse JSON fields
     if (settings.meta_data && typeof settings.meta_data === 'string') {
-      settings.meta_data = JSON.parse(settings.meta_data);
+      try {
+        settings.meta_data = JSON.parse(settings.meta_data);
+      } catch {
+        settings.meta_data = null;
+      }
     }
+
+    // never send the secret token to the browser — only whether it is set
+    const tok = String(settings.access_token || '');
+    settings.access_token_set = tok.length > 0;
+    settings.access_token = tok ? `••••••••${tok.slice(-4)}` : '';
 
     return NextResponse.json(settings);
   } catch (error) {
@@ -83,7 +92,7 @@ export async function POST(request: NextRequest) {
         `UPDATE whatsapp_settings SET
           whatsapp_business_account_id = ?,
           phone_number_id = ?,
-          access_token = ?,
+          access_token = COALESCE(?, access_token),
           business_name = ?,
           phone_number = ?,
           display_phone_number = ?,
@@ -95,7 +104,8 @@ export async function POST(request: NextRequest) {
         [
           data.whatsapp_business_account_id || null,
           data.phone_number_id || null,
-          data.access_token || null,
+          /* blank = keep the saved token (the page never receives it) */
+          data.access_token && !String(data.access_token).startsWith('••') ? data.access_token : null,
           data.business_name || null,
           data.phone_number || null,
           data.display_phone_number || null,
@@ -144,7 +154,7 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     console.error('Error saving WhatsApp settings:', error);
     return NextResponse.json(
-      { message: error.message || 'Internal server error' },
+      { message: 'Could not save the settings. Please try again.' },
       { status: 500 }
     );
   }
