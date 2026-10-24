@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
 import { METHOD_LABEL } from "@/lib/ledger";
-import { ensurePosTables } from "@/lib/posSale";
+import { INVOICE_META_TABLE, ensureSalesOpsTables, listExchanges } from "@/lib/salesOps";
 
 /* ============================================================
    GET /api/invoices/:id/print
@@ -19,7 +19,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const companyId = user.company_id;
 
   try {
-    await ensurePosTables().catch((e) => console.error("pos setup", e));
+    await ensureSalesOpsTables().catch((e) => console.error("sales ops setup", e));
     const pool = getPool();
     const [hRows] = await pool.query(
       `SELECT i.id, i.invoice_number, i.invoice_date, i.created_at, i.status,
@@ -73,6 +73,32 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       /* table not created yet */
     }
 
+    /* counter / delivery, cancellation, exchanges */
+    let meta: Row | null = null;
+    let exchange: Row | null = null;
+    let exchangedLater: Row[] = [];
+    let refunds: Row[] = [];
+    try {
+      const [mRows] = await pool.query(
+        `SELECT delivery_mode, DATE_FORMAT(delivered_at, '%Y-%m-%d %H:%i') AS delivered_on,
+                DATE_FORMAT(cancelled_at, '%Y-%m-%d %H:%i') AS cancelled_on, cancel_reason, cancel_settlement
+           FROM ${INVOICE_META_TABLE} WHERE invoice_id = ? LIMIT 1`,
+        [id]
+      );
+      meta = (mRows as Row[])[0] || null;
+      const ex = (await listExchanges(pool, companyId, { invoice_id: id })) as Row[];
+      exchange = ex.find((e) => Number(e.exchange_invoice_id) === id) || null;
+      exchangedLater = ex.filter((e) => Number(e.original_invoice_id) === id);
+      const [rf] = await pool.query(
+        `SELECT refund_number, DATE_FORMAT(refund_date, '%Y-%m-%d') AS refund_date, amount, method
+           FROM crm_customer_refunds WHERE company_id = ? AND invoice_id = ? ORDER BY id`,
+        [companyId, id]
+      );
+      refunds = (rf as Row[]).map((r) => ({ ...r, amount: Number(r.amount) }));
+    } catch (e) {
+      console.error("print extras", e);
+    }
+
     return NextResponse.json({
       data: {
         ...inv,
@@ -80,6 +106,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
         items,
         payments,
         delivery,
+        meta,
+        exchange,
+        exchanged_later: exchangedLater.map((e) => ({ exchange_number: e.exchange_number, date: String(e.created_at), exchange_invoice_id: e.exchange_invoice_id })),
+        refunds,
       },
     });
   } catch (err) {
