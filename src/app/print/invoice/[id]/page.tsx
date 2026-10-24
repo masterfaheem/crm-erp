@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { isExchangeNo } from "@/lib/format";
 import { useParams } from "next/navigation";
 import { BRAND, DEFAULT_ITEM_WARRANTY, WARRANTY_TERMS, waNumber } from "@/lib/invoiceBrand";
 
@@ -90,7 +91,7 @@ export default function PrintInvoicePage() {
     ])).join(" + ") ||
     (Number(inv.grand_total) < 0 ? "Kept as credit" : Number(inv.grand_total) === 0 ? "No difference" : "Not paid yet");
   const d = inv.delivery;
-  const isExchange = !!inv.exchange || inv.invoice_number.startsWith("EXC-");
+  const isExchange = !!inv.exchange || isExchangeNo(inv.invoice_number);
   const isCancelled = inv.status === "cancelled";
   const deliveryText = d
     ? ["Courier delivery", d.courier, d.tracking_no ? `Tracking ${d.tracking_no}` : null].filter(Boolean).join(" · ")

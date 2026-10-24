@@ -13,7 +13,29 @@ import { ensureAccessSchema } from "@/lib/access";
    Body: { identifier (email | username | phone), password }
    Sets an HTTP-only session cookie on success.
 ============================================================ */
+/* ---------------- brute-force guard ----------------
+   8 wrong passwords for the same login (or 30 from one IP) in 15 minutes
+   -> wait before trying again. Kept in memory (resets on restart). */
+const WINDOW_MS = 15 * 60 * 1000;
+const fails = new Map<string, number[]>();
+function recent(key: string) {
+  const now = Date.now();
+  const list = (fails.get(key) || []).filter((t) => now - t < WINDOW_MS);
+  if (list.length) fails.set(key, list);
+  else fails.delete(key);
+  return list;
+}
+function noteFail(...keys: string[]) {
+  if (fails.size > 10000) fails.clear();
+  for (const k of keys) fails.set(k, [...recent(k), Date.now()]);
+}
+function tooMany(loginKey: string, ipKey: string) {
+  return recent(loginKey).length >= 8 || recent(ipKey).length >= 30;
+}
+
 export async function POST(req: NextRequest) {
+  const ipAddr =
+    req.headers.get("x-forwarded-for")?.split(",")[0].trim() || req.headers.get("x-real-ip") || "unknown";
   try {
     const body = await req.json().catch(() => null);
 
@@ -26,6 +48,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { message: "Email / username / phone and password are required." },
         { status: 400 }
+      );
+    }
+
+    const loginKey = `u:${login}`;
+    const ipKey = `ip:${ipAddr}`;
+    if (tooMany(loginKey, ipKey)) {
+      return NextResponse.json(
+        { message: "Too many wrong attempts. Please wait 15 minutes and try again." },
+        { status: 429 }
       );
     }
 
@@ -63,6 +94,7 @@ export async function POST(req: NextRequest) {
 
     // Generic error to avoid leaking which emails exist
     if (!user) {
+      noteFail(loginKey, ipKey);
       return NextResponse.json(
         { message: "Wrong login details or password." },
         { status: 401 }
@@ -72,6 +104,7 @@ export async function POST(req: NextRequest) {
     // Verify password hash
     const ok = user.password_hash ? await bcrypt.compare(password, user.password_hash) : false;
     if (!ok) {
+      noteFail(loginKey, ipKey);
       return NextResponse.json(
         { message: "Wrong login details or password." },
         { status: 401 }

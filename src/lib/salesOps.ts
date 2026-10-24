@@ -1,4 +1,5 @@
 import { getPool } from "@/lib/db";
+import { isExchangeNo } from "@/lib/format";
 import { LEADS_TABLE } from "@/lib/leadsTable";
 import {
   REFUND_TABLE,
@@ -10,7 +11,7 @@ import {
   recalcInvoice,
 } from "@/lib/ledger";
 import { HANDOVER_TABLE, ensureHandoverTable } from "@/lib/orderHandover";
-import { INVOICE_LEAD_TABLE, currentCosts, ensurePosTables, lockedDocNumber } from "@/lib/posSale";
+import { INVOICE_LEAD_TABLE, currentCosts, ensurePosTables, lockedDocNumber, lockedSeqNumber } from "@/lib/posSale";
 import { WARRANTY_DAYS } from "@/lib/invoiceBrand";
 
 /* ============================================================
@@ -307,7 +308,7 @@ export async function cancelInvoice(conn: Conn, user: U, invoiceId: number, inpu
   );
   if (!inv) throw new OpError("Invoice not found", 404);
   if (inv.status === "cancelled") throw new OpError("This bill is already cancelled", 409);
-  if (String(inv.invoice_number).startsWith("EXC-")) {
+  if (isExchangeNo(inv.invoice_number)) {
     throw new OpError("An exchange bill can't be cancelled. Make another exchange to reverse it.", 409);
   }
   const [exRows] = await conn.query(
@@ -637,7 +638,7 @@ export async function createExchange(conn: Conn, user: U, input: ExchangeInput) 
   if (diff > 0 && input.payment.amount > diff + 0.009) throw new OpError("Payment is more than the difference");
 
   /* the exchange bill */
-  const number = await lockedDocNumber(conn, "invoices", "invoice_number", "EXC", companyId);
+  const number = await lockedSeqNumber(conn, "invoices", "invoice_number", "TX-EXC", companyId);
   const today = todayPKT();
   const notes = `Exchange of ${orig.invoice_number}. Reason: ${input.reason}${input.warranty_claim ? " (warranty claim)" : ""}`.slice(0, 1000);
   const [ins] = await conn.query(

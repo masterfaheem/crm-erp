@@ -114,6 +114,34 @@ export async function lockedDocNumber(
   return `${prefix}-${year}-${String(seq).padStart(4, "0")}`;
 }
 
+/* PREFIX-000001 (no year), e.g. TX-INV-000001. Same locking as above. */
+export async function lockedSeqNumber(
+  conn: Conn,
+  table: string,
+  column: string,
+  prefix: string,
+  companyId: number,
+  pad = 6
+): Promise<string> {
+  const key = `${table}:${prefix}`;
+  await getPool().query(
+    `INSERT IGNORE INTO ${COUNTER_TABLE} (company_id, doc_key, seq) VALUES (?, ?, 0)`,
+    [companyId, key]
+  );
+  const [[ctr]] = await conn.query(
+    `SELECT seq FROM ${COUNTER_TABLE} WHERE company_id = ? AND doc_key = ? FOR UPDATE`,
+    [companyId, key]
+  );
+  const [[mx]] = await conn.query(
+    `SELECT MAX(CAST(SUBSTRING_INDEX(${column}, '-', -1) AS UNSIGNED)) AS m
+       FROM ${table} WHERE company_id = ? AND ${column} LIKE ?`,
+    [companyId, `${prefix}-%`]
+  );
+  const seq = Math.max(Number(ctr?.seq || 0), Number(mx?.m || 0)) + 1;
+  await conn.query(`UPDATE ${COUNTER_TABLE} SET seq = ? WHERE company_id = ? AND doc_key = ?`, [seq, companyId, key]);
+  return `${prefix}-${String(seq).padStart(pad, "0")}`;
+}
+
 /* ---------------- one checkout = one bill ---------------- */
 export function cleanClientRef(v: unknown): string | null {
   const s = String(v ?? "").trim();
