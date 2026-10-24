@@ -3,6 +3,7 @@ import { getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
 import { LEADS_TABLE, cleanDate, ensureLeadsTable, nowPKT } from "@/lib/leadsTable";
 import { HANDOVER_TABLE } from "@/lib/orderHandover";
+import { INVOICE_LEAD_TABLE, ensurePosTables } from "@/lib/posSale";
 
 /* ============================================================
    GET /api/reports/leads?from=YYYY-MM-DD&to=YYYY-MM-DD&source=&assigned_to=
@@ -15,6 +16,7 @@ export async function GET(req: NextRequest) {
     const user = await requireUser(req);
     if (!user) return unauthorized();
     await ensureLeadsTable();
+    await ensurePosTables();
 
     const sp = new URL(req.url).searchParams;
     const from = cleanDate(sp.get("from"));
@@ -45,14 +47,19 @@ export async function GET(req: NextRequest) {
     const q = async (sql: string, extra: unknown[] = []) =>
       (await pool.query(sql, [...params, ...extra]))[0] as Row[];
 
-    const FROM = `FROM ${LEADS_TABLE} l LEFT JOIN ${HANDOVER_TABLE} h ON h.lead_id = l.id`;
+    /* online orders come from the handover; walk-in (POS) bills from crm_invoice_leads */
+    const FROM = `FROM ${LEADS_TABLE} l LEFT JOIN ${HANDOVER_TABLE} h ON h.lead_id = l.id
+      LEFT JOIN (SELECT il.lead_id, SUM(i.grand_total) AS amt, COUNT(*) AS bills
+                   FROM ${INVOICE_LEAD_TABLE} il JOIN invoices i ON i.id = il.invoice_id AND i.status <> 'cancelled'
+                  WHERE il.company_id = ${Number(user.company_id)}
+                  GROUP BY il.lead_id) wi ON wi.lead_id = l.id`;
     /* per-group stats: total, won, lost, open, revenue */
     const STATS = `COUNT(*) AS total,
        SUM(l.status = 'won') AS won,
        SUM(l.status = 'lost') AS lost,
        SUM(l.status NOT IN ('won','lost')) AS open,
-       COALESCE(SUM(h.total_amount), 0) AS revenue,
-       SUM(h.id IS NOT NULL) AS orders`;
+       COALESCE(SUM(COALESCE(h.total_amount, 0) + COALESCE(wi.amt, 0)), 0) AS revenue,
+       SUM(h.id IS NOT NULL OR wi.lead_id IS NOT NULL) AS orders`;
 
     const by = (col: string) =>
       q(`SELECT ${col} AS k, ${STATS} ${FROM} WHERE ${W} GROUP BY ${col} ORDER BY total DESC`);
@@ -75,6 +82,9 @@ export async function GET(req: NextRequest) {
     ] = await Promise.all([
       q(`SELECT ${STATS},
             AVG(CASE WHEN h.id IS NOT NULL THEN h.total_amount END) AS avg_order,
+            SUM(l.status = 'won' AND l.sales_channel = 'walk_in') AS won_walk_in,
+            SUM(l.status = 'won' AND COALESCE(l.sales_channel, '') <> 'walk_in') AS won_online,
+            COALESCE(SUM(wi.amt), 0) AS revenue_walk_in,
             SUM(l.whatsapp IS NULL AND l.phone IS NULL) AS no_number,
             SUM(l.source IS NULL) AS no_source,
             SUM(l.city IS NULL) AS no_city,
