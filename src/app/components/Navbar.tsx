@@ -209,7 +209,8 @@ const NAV_GROUPS: NavGroup[] = [
     icon: ICONS.accounting,
     children: [
       { label: "Chart of Accounts", href: "/accounting/accounts" },
-      { label: "Journal Entries", href: "/accounting/journal-entries" },
+      { label: "Journal & Expenses", href: "/accounting/journal-entries" },
+      { label: "Account Ledger", href: "/accounting/ledger" },
       { label: "Trial Balance", href: "/accounting/reports/trial-balance" },
       { label: "Profit & Loss", href: "/accounting/reports/profit-loss" },
       { label: "Balance Sheet", href: "/accounting/reports/balance-sheet" },
