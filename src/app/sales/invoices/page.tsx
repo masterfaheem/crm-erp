@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Navbar from "@/app/components/Navbar";
 import { formatCurrency, formatDate, prettyStatus } from "@/lib/format";
+import { useAccess } from "@/app/components/useAccess";
 
 interface CustomerLite { id: number; name: string; }
 
@@ -115,6 +116,9 @@ function InvoicesContent() {
   useEffect(() => { const t = setTimeout(fetchRows, 250); return () => clearTimeout(t); }, [fetchRows]);
   useEffect(() => { setPage(1); }, [search, statusFilter, customerFilter]);
 
+  const { can } = useAccess();
+  const [cancelling, setCancelling] = useState<InvoiceRow | null>(null);
+
   const handleDelete = async (r: InvoiceRow) => {
     if (!window.confirm(`Delete invoice "${r.invoice_number}"?`)) return;
     try {
@@ -219,10 +223,18 @@ function InvoicesContent() {
                     </span>
                   </td>
                   <td className="whitespace-nowrap px-4 py-3.5 text-right">
-                    <a href={`/print/invoice/${r.id}`} target="_blank" rel="noopener noreferrer" className="mr-3 text-sm font-medium text-gray-700 hover:text-gray-900">Print</a>
-                    <button onClick={() => { setEditing(r); setShowModal(true); }} className="text-sm font-medium text-[#0fa846] hover:text-[#0c8a3a]">Edit</button>
-                    <span className="mx-2 text-gray-300">·</span>
-                    <button onClick={() => handleDelete(r)} className="text-sm font-medium text-gray-700 hover:text-red-600">Delete</button>
+                    <a href={`/print/invoice/${r.id}`} target="_blank" rel="noopener noreferrer" className="text-sm font-medium text-gray-700 hover:text-gray-900">Print</a>
+                    {r.status !== "cancelled" && r.status !== "draft" && can("sales.exchange") && (
+                      <a href={`/exchange?invoice=${r.id}`} className="ml-3 text-sm font-medium text-blue-700 hover:text-blue-900">Exchange</a>
+                    )}
+                    {r.status !== "cancelled" && !r.invoice_number.startsWith("EXC-") && (
+                      <button onClick={() => { setEditing(r); setShowModal(true); }} className="ml-3 text-sm font-medium text-[#0fa846] hover:text-[#0c8a3a]">Edit</button>
+                    )}
+                    {r.status === "draft" ? (
+                      <button onClick={() => handleDelete(r)} className="ml-3 text-sm font-medium text-gray-700 hover:text-red-600">Delete</button>
+                    ) : r.status !== "cancelled" && !r.invoice_number.startsWith("EXC-") && can("sales.delete") ? (
+                      <button onClick={() => setCancelling(r)} className="ml-3 text-sm font-medium text-gray-700 hover:text-red-600">Cancel</button>
+                    ) : null}
                   </td>
                 </tr>
               ))}
@@ -250,6 +262,109 @@ function InvoicesContent() {
         <InvoiceModal invoice={editing} customers={customers}
           onClose={() => setShowModal(false)} onSaved={() => { setShowModal(false); fetchRows(); }} />
       )}
+      {cancelling && (
+        <CancelBillModal
+          invoice={cancelling}
+          onClose={() => setCancelling(null)}
+          onDone={(msg) => { setCancelling(null); fetchRows(); window.alert(msg); }}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   CANCEL BILL — the bill stays on record as Cancelled
+============================================================ */
+const REFUND_METHODS = [
+  { value: "cash", label: "Cash" },
+  { value: "bank_transfer", label: "Bank Transfer" },
+  { value: "wallet", label: "JazzCash / Easypaisa" },
+  { value: "card", label: "Card (POS machine)" },
+];
+
+function CancelBillModal({ invoice, onClose, onDone }: { invoice: InvoiceRow; onClose: () => void; onDone: (msg: string) => void }) {
+  const paid = Number(invoice.paid_amount) || 0;
+  const [reason, setReason] = useState("");
+  const [settlement, setSettlement] = useState<"refund" | "credit">("refund");
+  const [method, setMethod] = useState("cash");
+  const [reference, setReference] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const inp = "w-full rounded-md border border-gray-300 px-3 py-2 text-sm outline-none focus:border-[#17D65D] focus:ring-2 focus:ring-[#17D65D]/20";
+
+  const submit = async () => {
+    setError("");
+    if (reason.trim().length < 3) return setError("Write the reason for cancelling.");
+    setSaving(true);
+    try {
+      const r = await fetch(`/api/invoices/${invoice.id}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ reason, settlement, refund_method: method, refund_reference: reference }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || "Could not cancel");
+      const d = j.data || {};
+      const money =
+        d.money_held > 0
+          ? d.settlement === "refund"
+            ? ` ${formatCurrency(d.money_held)} refunded.`
+            : ` ${formatCurrency(d.money_held)} kept as customer credit.`
+          : "";
+      onDone(`${invoice.invoice_number} cancelled. Stock returned.${money}${d.order_note ? ` (${d.order_note})` : ""}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not cancel");
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-md rounded-lg bg-white p-5 shadow-xl">
+        <h3 className="text-base font-semibold text-gray-900">Cancel {invoice.invoice_number}?</h3>
+        <p className="mt-1 text-xs text-gray-500">
+          The bill is not deleted — it stays on record as <b>Cancelled</b>. Stock comes back and the CRM lead / online order go back to where they were.
+        </p>
+        <div className="mt-4 space-y-3">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700">Reason *</label>
+            <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Wrong model billed, customer changed mind" className={inp} autoFocus />
+          </div>
+          {paid > 0 && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-3">
+              <div className="mb-2 text-xs font-semibold text-amber-900">Customer paid {formatCurrency(paid)} on this bill</div>
+              <div className="grid grid-cols-2 gap-2">
+                {([
+                  ["refund", "Refund the money"],
+                  ["credit", "Keep as customer credit"],
+                ] as const).map(([v, l]) => (
+                  <button key={v} type="button" onClick={() => setSettlement(v)}
+                    className={`rounded-md border px-3 py-2 text-xs font-medium ${settlement === v ? "border-[#17D65D] bg-[#17D65D]/10" : "border-gray-200 bg-white"}`}>
+                    {l}
+                  </button>
+                ))}
+              </div>
+              {settlement === "refund" && (
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <select value={method} onChange={(e) => setMethod(e.target.value)} className={inp}>
+                    {REFUND_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                  </select>
+                  <input value={reference} onChange={(e) => setReference(e.target.value)} placeholder="Reference (optional)" className={inp} />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        {error && <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-xs text-red-700">{error}</p>}
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Back</button>
+          <button type="button" onClick={submit} disabled={saving} className="rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50">
+            {saving ? "Cancelling…" : "Cancel bill"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
