@@ -15,6 +15,7 @@ import {
   linkWalkInLead,
   lockedDocNumber,
 } from "@/lib/posSale";
+import { cleanWalkInDelivery, ensureSalesOpsTables, recordWalkInDelivery } from "@/lib/salesOps";
 
 /* the saved bill, as returned after create */
 async function loadCreated(invoiceId: number, companyId: number) {
@@ -110,6 +111,12 @@ export async function POST(req: NextRequest) {
     /* POS sends one id per checkout: a double-click / retry returns the same bill */
     const clientRef = cleanClientRef(body.client_ref);
     const walkInLead = cleanWalkInLead(body.walk_in_lead);
+    /* walk-in: handed over at the counter (default) or sent for delivery */
+    const delivery = cleanWalkInDelivery(body.walk_in_delivery);
+    if (!sales_order_id && body.walk_in_lead && delivery.error) {
+      conn.release();
+      return NextResponse.json({ error: delivery.error }, { status: 400 });
+    }
 
     const items: Array<{
       product_id: number | null; description: string;
@@ -166,6 +173,7 @@ export async function POST(req: NextRequest) {
 
     await ensureStockTable();
     await ensurePosTables();
+    await ensureSalesOpsTables();
     if (clientRef) {
       const doneId = await invoiceForClientRef(companyId, clientRef);
       if (doneId) {
@@ -337,12 +345,33 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    /* ---- walk-in: counter hand-over (delivered now) or send to the dispatch board ---- */
+    let dispatch: { mode: string; handover_id: number | null; order_number: string | null } | null = null;
+    let dispatchWarning: string | null = null;
+    if (!sales_order_id && body.walk_in_lead) {
+      const [paidRows] = await conn.query<any>(
+        "SELECT paid_amount FROM invoices WHERE id = ? AND company_id = ?", [invoiceId, companyId]
+      );
+      const paidRow = (paidRows as { paid_amount: number }[])[0];
+      await conn.query("SAVEPOINT walk_in_delivery");
+      try {
+        dispatch = await recordWalkInDelivery(conn, user, {
+          invoiceId, customerId: customer_id, leadId: lead?.lead_id ?? null, grandTotal: grand_total,
+          paid: Number(paidRow?.paid_amount || 0), items: prepared, delivery: delivery.value, notes,
+        });
+      } catch (e) {
+        console.error("[POST /api/invoices] walk-in delivery failed", e);
+        await conn.query("ROLLBACK TO SAVEPOINT walk_in_delivery");
+        dispatchWarning = "Bill saved, but it could not be sent to the dispatch board. Please create the delivery manually.";
+      }
+    }
+
     if (clientRef) await finishClientRef(conn, companyId, clientRef, invoiceId);
 
     await conn.commit(); conn.release();
 
     return NextResponse.json(
-      { data: await loadCreated(invoiceId, companyId), lead, lead_warning: leadWarning },
+      { data: await loadCreated(invoiceId, companyId), lead, lead_warning: leadWarning, dispatch, dispatch_warning: dispatchWarning },
       { status: 201 }
     );
   } catch (err) {
