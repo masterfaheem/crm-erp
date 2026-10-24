@@ -3,12 +3,13 @@ import { getPool } from "@/lib/db";
 import { accessFromRequest } from "@/lib/access";
 import { writeAudit } from "@/lib/audit";
 import { STOCK_TABLE, ensureStockTable, recalcCustomer } from "@/lib/ledger";
-import { ensurePosTables, INVOICE_LEAD_TABLE, POS_REQUEST_TABLE } from "@/lib/posSale";
+import { COUNTER_TABLE, ensurePosTables, INVOICE_LEAD_TABLE, POS_REQUEST_TABLE } from "@/lib/posSale";
 import { ensureSalesOpsTables, EXCHANGE_ITEM_TABLE, EXCHANGE_TABLE, INVOICE_META_TABLE } from "@/lib/salesOps";
 import { ensureHandoverTable, HANDOVER_TABLE } from "@/lib/orderHandover";
 import { REFUND_TABLE } from "@/lib/ledger";
 import { LEADS_TABLE } from "@/lib/leadsTable";
 import { ensureCostingTables, OPENING_COST_TABLE, recomputeAvgCost } from "@/lib/costing";
+import { ensureStockStatusTables, STATUS_MOVE_TABLE } from "@/lib/stockStatus";
 
 /* ============================================================
    SUPER ADMIN ONLY — remove TEST documents & products before go-live.
@@ -82,7 +83,9 @@ export async function POST(req: NextRequest) {
   if (!dry && body.confirm !== CONFIRM) {
     return NextResponse.json({ error: `Type "${CONFIRM}" to confirm.` }, { status: 400 });
   }
-  if (!Object.values(sel).some((l) => l.length)) return NextResponse.json({ error: "Nothing selected." }, { status: 400 });
+  /* go-live: number counters restart after the highest number still in use (e.g. first real bill = TX-INV-000001) */
+  const resetCounters = body.reset_counters === true;
+  if (!resetCounters && !Object.values(sel).some((l) => l.length)) return NextResponse.json({ error: "Nothing selected." }, { status: 400 });
 
   /* DDL first (it would commit an open transaction) */
   await ensureStockTable();
@@ -90,6 +93,7 @@ export async function POST(req: NextRequest) {
   await ensureSalesOpsTables();
   await ensureHandoverTable();
   await ensureCostingTables();
+  await ensureStockStatusTables();
 
   const pool = getPool();
   const conn = await pool.getConnection();
@@ -181,6 +185,7 @@ export async function POST(req: NextRequest) {
         await del("refunds (exchange)", `DELETE FROM ${REFUND_TABLE} WHERE company_id = ? AND source = 'exchange' AND source_id IN (${IN(excIds)})`, [c, ...excIds]);
         await del("exchanges", `DELETE FROM ${EXCHANGE_TABLE} WHERE id IN (${IN(excIds)})`, excIds);
       }
+      await del("stock status (exchange returns)", `DELETE FROM ${STATUS_MOVE_TABLE} WHERE company_id = ? AND ref_type = 'exchange' AND ref_id IN (${IN(L)})`, [c, ...L]);
       await del("refunds", `DELETE FROM ${REFUND_TABLE} WHERE company_id = ? AND invoice_id IN (${IN(L)})`, [c, ...L]);
       await del("customer payments", `DELETE FROM customer_payments WHERE company_id = ? AND invoice_id IN (${IN(L)})`, [c, ...L]);
       await del("stock moves (bills)", `DELETE FROM ${STOCK_TABLE} WHERE company_id = ? AND ref_type = 'invoice' AND ref_id IN (${IN(L)})`, [c, ...L]);
@@ -255,11 +260,15 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Some products are still used — select those documents too", problems: used }, { status: 400 });
       }
       await del("stock moves (products)", `DELETE FROM ${STOCK_TABLE} WHERE company_id = ? AND product_id IN (${IN(L)})`, [c, ...L]);
+      await del("stock status history", `DELETE FROM ${STATUS_MOVE_TABLE} WHERE company_id = ? AND product_id IN (${IN(L)})`, [c, ...L]);
       await del("opening costs", `DELETE FROM ${OPENING_COST_TABLE} WHERE company_id = ? AND product_id IN (${IN(L)})`, [c, ...L]);
       await del("products", `DELETE FROM products WHERE company_id = ? AND id IN (${IN(L)})`, [c, ...L]);
     }
 
     for (const cid of customers) await recalcCustomer(conn, c, cid);
+    if (resetCounters) {
+      await del("number counters reset", `UPDATE ${COUNTER_TABLE} SET seq = 0 WHERE company_id = ? AND seq <> 0`, [c]);
+    }
 
     if (dry) {
       await conn.rollback();
