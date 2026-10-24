@@ -34,6 +34,7 @@ interface Report {
   advance_methods: R[];
   online_by_city: R[];
   cod_due: R;
+  refunds?: { amount: number; n: number };
 }
 
 const N = (v: unknown) => Number(v) || 0;
@@ -118,8 +119,8 @@ export default function SalesReportPage() {
           {data && (
             <div className={`space-y-5 ${loading ? "opacity-60" : ""}`}>
               <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
-                <Tile label="Sales" value={rs(N(t.sales))} sub={`${N(t.bills)} bills`} />
-                <Tile label="Collected" value={rs(N(t.paid))} tone="text-green-600" />
+                <Tile label="Sales" value={rs(N(t.sales))} sub={`${N(t.bills)} bills${N(t.exchanges) ? ` · ${N(t.exchanges)} exchanges` : ""}`} />
+                <Tile label="Collected" value={rs(N(t.paid))} tone="text-green-600" sub={data.refunds?.n ? `after ${rs(N(data.refunds.amount))} refunded` : undefined} />
                 <Tile label="To collect" value={rs(N(t.outstanding))} tone="text-red-600" sub="unpaid balance" />
                 <Tile label="Avg bill" value={rs(N(t.avg_bill))} />
                 <Tile label="Customers" value={String(N(t.customers))} sub="who bought" />
