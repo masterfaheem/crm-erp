@@ -323,6 +323,7 @@ export const API_RULES: ApiRule[] = [
   },
   { re: /^\/api\/inventory\/moves/, GET: ["inventory.view"], POST: ["inventory.adjust"] },
   { re: /^\/api\/inventory\/opening-import/, POST: ["inventory.adjust"] },
+  { re: /^\/api\/inventory\/status/, GET: ["inventory.view"], POST: ["inventory.adjust"] },
   { re: /^\/api\/inventory/, GET: ["inventory.view"], ALL: ["inventory.adjust", "inventory.transfer"] },
 
   { re: /^\/api\/supplier-payments/, GET: ["purchases.payments"], ALL: ["purchases.payments"] },

@@ -13,6 +13,7 @@ import {
 import { HANDOVER_TABLE, ensureHandoverTable } from "@/lib/orderHandover";
 import { INVOICE_LEAD_TABLE, currentCosts, ensurePosTables, lockedDocNumber, lockedSeqNumber } from "@/lib/posSale";
 import { WARRANTY_DAYS } from "@/lib/invoiceBrand";
+import { ensureStockStatusTables, moveStatus } from "@/lib/stockStatus";
 
 /* ============================================================
    SALES OPERATIONS
@@ -70,6 +71,7 @@ export async function ensureSalesOpsTables(): Promise<void> {
   await ensurePosTables();
   await ensureHandoverTable();
   await ensureStockTable();
+  await ensureStockStatusTables();
   const pool = getPool();
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ${REFUND_TABLE} (
@@ -679,6 +681,16 @@ export async function createExchange(conn: Conn, user: U, input: ExchangeInput) 
        [l.dir === "in" ? "Returned in exchange" : "Given in exchange", l.serial ? `S/N ${l.serial}` : null, l.condition].filter(Boolean).join(" · ").slice(0, 255),
        user.id]
     );
+  }
+
+  /* returned units wait in "Returned — to check" until someone checks them */
+  for (const l of lines) {
+    if (l.dir !== "in" || !l.product_id || !trackedIds.has(l.product_id)) continue;
+    await moveStatus(conn, user, {
+      product_id: l.product_id, from: "ready", to: "returned", qty: Math.abs(l.quantity),
+      note: ["Exchange return", l.serial ? `S/N ${l.serial}` : null, l.condition].filter(Boolean).join(" · "),
+      ref_type: "exchange", ref_id: excId, ref_number: number,
+    }, { allowShort: true });
   }
 
   /* money for the difference */
