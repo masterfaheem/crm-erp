@@ -191,11 +191,11 @@ export default function LeadReportsPage() {
               {/* KPIs */}
               <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
                 <Tile label="Total leads" value={String(t.total || 0)} />
-                <Tile label="Won" value={String(t.won || 0)} tone="text-green-600" sub={`${pct(t.won || 0, t.total || 0)}% of all`} />
+                <Tile label="Won" value={String(t.won || 0)} tone="text-green-600" sub={`${t.won_online || 0} online · ${t.won_walk_in || 0} walk-in`} />
                 <Tile label="Lost" value={String(t.lost || 0)} tone="text-red-600" sub={`${pct(t.lost || 0, t.total || 0)}% of all`} />
                 <Tile label="Open" value={String(t.open || 0)} tone="text-blue-600" sub="still in pipeline" />
                 <Tile label="Conversion" value={`${pct(t.won || 0, closed)}%`} sub="won ÷ (won + lost)" />
-                <Tile label="Revenue (orders)" value={rs(t.revenue || 0)} sub={`${t.orders || 0} orders`} />
+                <Tile label="Revenue (orders)" value={rs(t.revenue || 0)} sub={`${t.orders || 0} orders · walk-in ${rs(t.revenue_walk_in || 0)}`} />
                 <Tile label="Avg order" value={rs(t.avg_order || 0)} />
                 <Tile label="Lead → order" value={hoursText(data.speed.hours_to_order)} sub="average time" />
               </div>
