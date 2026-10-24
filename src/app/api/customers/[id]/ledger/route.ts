@@ -37,9 +37,23 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       [companyId, id]
     );
 
+    /* money paid back (cancelled bill / exchange to a cheaper model) */
+    let refunds: Record<string, unknown>[] = [];
+    try {
+      refunds = await query<Record<string, unknown>[]>(
+        `SELECT r.id, DATE_FORMAT(r.refund_date, '%Y-%m-%d') AS d, r.refund_number AS num, r.amount, r.method,
+                r.reason, r.created_at, i.invoice_number
+           FROM crm_customer_refunds r LEFT JOIN invoices i ON i.id = r.invoice_id
+          WHERE r.company_id = ? AND r.customer_id = ?`,
+        [companyId, id]
+      );
+    } catch {
+      /* no refunds table yet */
+    }
+
     type Entry = {
       date: string;
-      type: "bill" | "payment";
+      type: "bill" | "payment" | "refund";
       ref_id: number;
       number: string;
       description: string;
@@ -54,9 +68,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
         type: "bill" as const,
         ref_id: Number(b.id),
         number: String(b.num),
-        description: "Sale bill",
-        debit: Number(b.amount) || 0,
-        credit: 0,
+        /* an exchange to a cheaper model is a credit to the customer */
+        description: String(b.num).startsWith("EXC-")
+          ? Number(b.amount) < 0 ? "Exchange credit" : "Exchange difference"
+          : "Sale bill",
+        debit: Math.max(0, Number(b.amount) || 0),
+        credit: Math.max(0, -(Number(b.amount) || 0)),
         balance: 0,
         sort: `${b.d} 0 ${new Date(String(b.created_at)).getTime()}`,
       })),
@@ -73,6 +90,18 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
         credit: Number(p.amount) || 0,
         balance: 0,
         sort: `${p.d} 1 ${new Date(String(p.created_at)).getTime()}`,
+      })),
+      ...refunds.map((r) => ({
+        date: String(r.d),
+        type: "refund" as const,
+        ref_id: Number(r.id),
+        number: String(r.num),
+        description: ["Refund paid", r.invoice_number ? `for ${r.invoice_number}` : null, r.reason].filter(Boolean).join(" · "),
+        method: String(r.method || ""),
+        debit: Number(r.amount) || 0,
+        credit: 0,
+        balance: 0,
+        sort: `${r.d} 2 ${new Date(String(r.created_at)).getTime()}`,
       })),
     ].sort((a, b) => (a.sort < b.sort ? -1 : a.sort > b.sort ? 1 : 0));
 
