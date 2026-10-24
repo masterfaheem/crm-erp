@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
 import { OpError, cancelInvoice, cleanCancelInput, ensureSalesOpsTables } from "@/lib/salesOps";
+import { writeAudit } from "@/lib/audit";
 
 /* ============================================================
    POST /api/invoices/:id/cancel
@@ -24,6 +25,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     await conn.beginTransaction();
     const result = await cancelInvoice(conn, user, id, value);
     await conn.commit();
+    await writeAudit(req, user, "invoice_cancel", "invoice", id);
     return NextResponse.json({ data: result });
   } catch (e) {
     try { await conn.rollback(); } catch {}
