@@ -171,6 +171,22 @@ export async function POST(req: NextRequest) {
     grand_total = Math.max(0, grand_total - orderDiscount) + shipping;
     grand_total = Math.round(grand_total * 100) / 100;
 
+    /* a real bill needs a price on every line and a total above zero */
+    if (status !== "draft") {
+      const noPrice = prepared.filter((p) => !(p.quantity > 0) || !(p.unit_price > 0));
+      if (noPrice.length) {
+        conn.release();
+        return NextResponse.json(
+          { error: `Enter quantity and sale price for: ${noPrice.map((p) => p.description || "item").join(", ")}` },
+          { status: 400 }
+        );
+      }
+      if (!(grand_total > 0)) {
+        conn.release();
+        return NextResponse.json({ error: "Bill total is zero — enter the sale price." }, { status: 400 });
+      }
+    }
+
     await ensureStockTable();
     await ensurePosTables();
     await ensureSalesOpsTables();
