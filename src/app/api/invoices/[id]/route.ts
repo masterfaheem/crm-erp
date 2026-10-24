@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { query, getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
 import { ensureStockTable, recalcCustomer, recalcInvoice, removeDocStock, syncDocStock } from "@/lib/ledger";
+import { currentCosts, ensurePosTables } from "@/lib/posSale";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await requireUser(req);
@@ -67,6 +68,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       return NextResponse.json({ error: "Invoice not found." }, { status: 404 });
     }
     await ensureStockTable();
+    await ensurePosTables();
     /* keep the bill-level discount + shipping that POS saved (unless sent again) */
     const [lineDisc] = await query<any[]>(
       "SELECT COALESCE(SUM(line_discount), 0) AS d FROM invoice_items WHERE invoice_id = ?",
@@ -127,15 +129,26 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
        subtotal, tax_total, discount_total, shipping, grand_total,
        balance, notes, terms, id, companyId]
     );
+    /* keep the cost saved at the time of sale; new products get today's cost */
+    const [oldCostRows] = await conn.query(
+      "SELECT product_id, MAX(unit_cost) AS c FROM invoice_items WHERE invoice_id = ? AND unit_cost IS NOT NULL GROUP BY product_id",
+      [id]
+    );
+    const oldCost = new Map<number, number>(
+      (oldCostRows as { product_id: number; c: number }[]).map((r) => [Number(r.product_id), Number(r.c)])
+    );
+    const nowCost = await currentCosts(conn, companyId, prepared.map((p) => Number(p.product_id) || 0));
     await conn.query("DELETE FROM invoice_items WHERE invoice_id = ?", [id]);
     for (const p of prepared) {
+      const pid = Number(p.product_id) || 0;
       await conn.query(
         `INSERT INTO invoice_items
            (invoice_id, product_id, description, quantity, unit_price, tax_rate, discount_percent,
-            line_subtotal, line_tax, line_discount, line_total)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            line_subtotal, line_tax, line_discount, line_total, unit_cost)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [id, p.product_id, p.description, p.quantity, p.unit_price, p.tax_rate,
-         p.discount_percent, p.line_subtotal, p.line_tax, p.line_discount, p.line_total]
+         p.discount_percent, p.line_subtotal, p.line_tax, p.line_discount, p.line_total,
+         oldCost.get(pid) ?? nowCost.get(pid) ?? null]
       );
     }
     // payments on this bill move with the customer
@@ -221,6 +234,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
       }
     }
     await removeDocStock(conn, companyId, "invoice", id);
+    await conn.query("DELETE FROM crm_invoice_leads WHERE invoice_id = ? AND company_id = ?", [id, companyId]).catch(() => {});
     await conn.query("DELETE FROM invoice_items WHERE invoice_id = ?", [id]);
     await conn.query("DELETE FROM invoices WHERE id = ? AND company_id = ?", [id, companyId]);
     await recalcCustomer(conn, companyId, Number(existing.customer_id));
