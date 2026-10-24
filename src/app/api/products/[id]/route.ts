@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { query } from "@/lib/db";
+import { query, getPool } from "@/lib/db";
 import { requireUser, unauthorized } from "@/lib/requireUser";
 import { accessFromRequest, can } from "@/lib/access";
-import { ensureStockTable, STOCK_SQL } from "@/lib/ledger";
+import { ensureStockTable, STOCK_SQL, STOCK_TABLE } from "@/lib/ledger";
+import { ensureCostingTables, setOpeningCost } from "@/lib/costing";
+import { EXCHANGE_ITEM_TABLE } from "@/lib/salesOps";
 
 /* ============================================================
    PUT  /api/products/:id
@@ -162,6 +164,17 @@ export async function PUT(
       ]
     );
 
+    /* no purchase bills yet -> the cost typed here IS the opening cost (books follow it) */
+    if (showCost) {
+      await ensureCostingTables();
+      const [pb] = await query<{ n: number }[]>(
+        `SELECT COUNT(*) AS n FROM purchase_bill_items it JOIN purchase_bills b ON b.id = it.purchase_bill_id
+          WHERE it.product_id = ? AND b.company_id = ? AND b.status NOT IN ('draft', 'cancelled')`,
+        [id, companyId]
+      );
+      if (!Number(pb?.n)) await setOpeningCost(getPool(), companyId, id, purchase_price);
+    }
+
     const [row] = await query<any[]>(
       `SELECT
          p.id, p.sku, p.barcode, p.name, p.description, p.product_type,
@@ -218,6 +231,34 @@ export async function DELETE(
       return NextResponse.json(
         { error: "Product not found." },
         { status: 404 }
+      );
+    }
+
+    /* never delete a product that is on any bill / order / purchase / stock history */
+    const used: string[] = [];
+    const checks: [string, string][] = [
+      ["SELECT COUNT(*) AS n FROM invoice_items WHERE product_id = ?", "sale bills"],
+      ["SELECT COUNT(*) AS n FROM sales_order_items WHERE product_id = ?", "sales orders"],
+      ["SELECT COUNT(*) AS n FROM purchase_bill_items WHERE product_id = ?", "purchase bills"],
+      [`SELECT COUNT(*) AS n FROM ${STOCK_TABLE} WHERE product_id = ?`, "stock history"],
+    ];
+    for (const t of ["purchase_order_items", "quotation_items", EXCHANGE_ITEM_TABLE]) {
+      const [ex] = await query<{ n: number }[]>(
+        "SELECT COUNT(*) AS n FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?",
+        [t]
+      );
+      if (Number(ex?.n)) checks.push([`SELECT COUNT(*) AS n FROM ${t} WHERE product_id = ?`, t === EXCHANGE_ITEM_TABLE ? "exchanges" : t === "quotation_items" ? "quotations" : "purchase orders"]);
+    }
+    for (const [sql, label] of checks) {
+      const [r] = await query<{ n: number }[]>(sql, [id]);
+      if (Number(r?.n)) used.push(label);
+    }
+    const [st] = await query<{ o: number }[]>("SELECT COALESCE(opening_stock, 0) AS o FROM products WHERE id = ?", [id]);
+    if (Number(st?.o)) used.push("opening stock");
+    if (used.length) {
+      return NextResponse.json(
+        { error: `This product is used in ${used.join(", ")} — it can't be deleted. Set it to Inactive instead.` },
+        { status: 409 }
       );
     }
 
