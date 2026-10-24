@@ -219,6 +219,7 @@ function InvoicesContent() {
                     </span>
                   </td>
                   <td className="whitespace-nowrap px-4 py-3.5 text-right">
+                    <a href={`/print/invoice/${r.id}`} target="_blank" rel="noopener noreferrer" className="mr-3 text-sm font-medium text-gray-700 hover:text-gray-900">Print</a>
                     <button onClick={() => { setEditing(r); setShowModal(true); }} className="text-sm font-medium text-[#0fa846] hover:text-[#0c8a3a]">Edit</button>
                     <span className="mx-2 text-gray-300">·</span>
                     <button onClick={() => handleDelete(r)} className="text-sm font-medium text-gray-700 hover:text-red-600">Delete</button>

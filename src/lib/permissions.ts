@@ -303,6 +303,8 @@ export const API_RULES: ApiRule[] = [
   { re: /^\/api\/customer-groups/, GET: ["customers.view"], ALL: ["customers.edit"] },
   { re: /^\/api\/customer-payments/, GET: ["sales.payments", "customers.balance"], ALL: ["sales.payments"] },
 
+  { re: /^\/api\/invoices\/[^/]+\/print/, GET: ["sales.view", "sales.create"] },
+  { re: /^\/api\/pos\//, GET: ["sales.create"] },
   { re: /^\/api\/(invoices|quotations|sales-orders)/, ...crud(["sales.view"], ["sales.create"], ["sales.edit"], ["sales.delete"]) },
   { re: /^\/api\/dispatch/, GET: ["dispatch.view", "sales.create"], ALL: ["dispatch.manage"] },
 
@@ -357,6 +359,7 @@ export const PAGE_RULES: [string, Need][] = [
   ["/contacts", ["customers.view"]],
   ["/sales/customer-payments", ["sales.payments"]],
   ["/sales", ["sales.view"]],
+  ["/print/invoice", ["sales.view", "sales.create"]],
   ["/pos", ["sales.create"]],
   ["/dispatch", ["dispatch.view"]],
   ["/products", ["products.view"]],

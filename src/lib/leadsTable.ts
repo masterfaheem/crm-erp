@@ -36,6 +36,8 @@ const EXTRA_COLUMNS: [string, string][] = [
   ["delivery_area", "VARCHAR(150) NULL"],
   ["delivery_landmark", "VARCHAR(200) NULL"],
   ["delivery_city", "VARCHAR(100) NULL"],
+  /* how the won lead bought: 'walk_in' (POS) — empty = online / not yet sold */
+  ["sales_channel", "VARCHAR(20) NULL"],
 ];
 
 let ensured = false;

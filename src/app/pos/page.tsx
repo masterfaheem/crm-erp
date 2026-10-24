@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Navbar from "@/app/components/Navbar";
 import { useAccess } from "@/app/components/useAccess";
 import { OrderBoard, type Order as BoardOrder } from "@/app/dispatch/OrderBoard";
+import { LEAD_SOURCES, LEAD_SOURCE_GROUPS, PROFESSIONS } from "@/lib/leadOptions";
 
 /* ============================================================
    TYPES
@@ -97,8 +98,33 @@ interface OnlineOrder {
   }[];
 }
 
+/* walk-in bill -> CRM lead (marked Won on sale) */
+interface WalkInLead {
+  lead_id: number | null;
+  source: string;
+  profession: string;
+  profession_other: string;
+}
+interface LeadMatch {
+  open_leads: { id: number; lead_number: string; first_name: string; last_name: string | null; status: string; source: string | null; profession: string | null }[];
+  last: { lead_number: string; status: string; source: string | null; profession: string | null; profession_other: string | null } | null;
+  past_purchases: number;
+}
+const EMPTY_WALK_IN: WalkInLead = { lead_id: null, source: "", profession: "", profession_other: "" };
+
+function newCheckoutRef(): string {
+  try {
+    if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  } catch {
+    /* ignore */
+  }
+  return `pos-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 interface InvoiceResult {
   id: number;
+  lead_text?: string | null;
+  lead_warning?: string | null;
   invoice_number: string;
   customer_name: string;
   grand_total: number;
@@ -231,6 +257,10 @@ function POSContent() {
   const [showOrders, setShowOrders] = useState(false);
   const [orderCounts, setOrderCounts] = useState<Record<string, number>>({});
   const [boardKey, setBoardKey] = useState(0);
+  /* walk-in lead details + one id per checkout (double-click / retry safe) */
+  const [walkIn, setWalkIn] = useState<WalkInLead>(EMPTY_WALK_IN);
+  const [leadMatch, setLeadMatch] = useState<LeadMatch | null>(null);
+  const checkoutRef = useRef("");
 
   /* online-order counts for the header badge (refresh every minute) */
   const refreshCounts = useCallback(async () => {
@@ -286,10 +316,30 @@ function POSContent() {
   const selectCustomer = useCallback(async (c: Customer | null) => {
     setSelectedCustomer(c);
     setPendingOrders([]);
+    setWalkIn(EMPTY_WALK_IN);
+    setLeadMatch(null);
     if (!c) {
       setLinkedOrder(null);
       return;
     }
+    /* walk-in: find the customer's open lead / last known source to pre-fill */
+    fetch(`/api/pos/lead-match?customer_id=${c.id}`, { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        const m: LeadMatch | null = j?.data || null;
+        setLeadMatch(m);
+        if (!m) return;
+        const open = m.open_leads[0];
+        /* open lead keeps its source; a returning buyer is "Repeat" */
+        const src = open?.source || (m.past_purchases > 0 ? "repeat" : m.last?.source || "");
+        setWalkIn({
+          lead_id: open ? open.id : null,
+          source: src || "",
+          profession: open?.profession || m.last?.profession || "",
+          profession_other: m.last?.profession_other || "",
+        });
+      })
+      .catch(() => {});
     try {
       const r = await fetch(`/api/dispatch?status=pending&customer_id=${c.id}`, { credentials: "include" });
       if (r.ok) setPendingOrders((await r.json()).data || []);
@@ -338,6 +388,11 @@ function POSContent() {
       }
     })();
   }, [loadOrderIntoCart]);
+
+  /* a changed bill is a new checkout */
+  useEffect(() => {
+    checkoutRef.current = "";
+  }, [cart, selectedCustomer, linkedOrder]);
 
   /* ---------- Cart ops ---------- */
   const addToCart = useCallback((product: Product) => {
@@ -467,6 +522,10 @@ function POSContent() {
       setError("Cart is empty.");
       return;
     }
+    if (!linkedOrder && !walkIn.lead_id && !walkIn.source) {
+      setError("Select the lead source (how the customer found Techno X) — it is saved on the CRM lead.");
+      return;
+    }
     if (paid < totals.grandTotal) {
       if (
         !window.confirm(
@@ -479,7 +538,17 @@ function POSContent() {
 
     setSaving(true);
     try {
+      if (!checkoutRef.current) checkoutRef.current = newCheckoutRef();
       const payload = {
+        client_ref: checkoutRef.current,
+        walk_in_lead: linkedOrder
+          ? null
+          : {
+              lead_id: walkIn.lead_id,
+              source: walkIn.source || null,
+              profession: walkIn.profession || null,
+              profession_other: walkIn.profession === "other" ? walkIn.profession_other || null : null,
+            },
         customer_id: selectedCustomer.id,
         invoice_date: new Date().toISOString().slice(0, 10),
         reference: reference.trim() || null,
@@ -524,8 +593,15 @@ function POSContent() {
       }
 
       const json = await res.json();
+      checkoutRef.current = "";
       setShowSuccess({
         id: json.data?.id ?? 0,
+        lead_text: json.lead
+          ? `${json.lead.lead_number} ${json.lead.created ? "created" : "updated"} — marked Won (walk-in)`
+          : linkedOrder
+          ? "Online order — its lead is already Won"
+          : null,
+        lead_warning: json.lead_warning || null,
         invoice_number: json.data?.invoice_number ?? "INV-XXX",
         customer_name: selectedCustomer.name,
         grand_total: totals.grandTotal,
@@ -540,6 +616,8 @@ function POSContent() {
       setSelectedCustomer(null);
       setLinkedOrder(null);
       setPendingOrders([]);
+      setWalkIn(EMPTY_WALK_IN);
+      setLeadMatch(null);
       refreshCounts();
       setAmountPaid("");
       setPaymentRef("");
@@ -1067,6 +1145,9 @@ function POSContent() {
           setNotes={setNotes}
           saving={saving}
           error={error}
+          walkIn={linkedOrder ? null : walkIn}
+          setWalkIn={setWalkIn}
+          leadMatch={leadMatch}
           onClose={() => setShowCheckout(false)}
           onSubmit={handleSubmit}
         />
@@ -1747,9 +1828,15 @@ function CheckoutModal({
   setNotes,
   saving,
   error,
+  walkIn,
+  setWalkIn,
+  leadMatch,
   onClose,
   onSubmit,
 }: {
+  walkIn: WalkInLead | null;
+  setWalkIn: (v: WalkInLead) => void;
+  leadMatch: LeadMatch | null;
   customer: Customer;
   totals: {
     subtotal: number;
@@ -1957,6 +2044,80 @@ function CheckoutModal({
             </div>
           )}
 
+          {/* WALK-IN -> CRM LEAD */}
+          {walkIn && (
+            <div className="rounded-md border border-blue-200 bg-blue-50/60 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-xs font-semibold text-blue-900">Walk-in customer — CRM lead</span>
+                <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold text-blue-700">Will be marked Won</span>
+              </div>
+              {leadMatch && leadMatch.open_leads.length > 0 ? (
+                <select
+                  value={walkIn.lead_id ?? ""}
+                  onChange={(e) => setWalkIn({ ...walkIn, lead_id: Number(e.target.value) || null })}
+                  className={`${inputCls} mb-2`}
+                >
+                  {leadMatch.open_leads.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      Use existing lead {l.lead_number} — {[l.first_name, l.last_name].filter(Boolean).join(" ")} ({l.status})
+                    </option>
+                  ))}
+                  <option value="">Create a new lead instead</option>
+                </select>
+              ) : (
+                <p className="mb-2 text-[11px] text-blue-800">
+                  No open lead with this number — a new lead will be created
+                  {leadMatch?.past_purchases ? " (repeat customer)" : ""}.
+                </p>
+              )}
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-gray-700">
+                    Lead source {walkIn.lead_id ? "" : "*"}
+                  </label>
+                  <select
+                    value={walkIn.source}
+                    onChange={(e) => setWalkIn({ ...walkIn, source: e.target.value })}
+                    className={inputCls}
+                  >
+                    <option value="">Select…</option>
+                    {LEAD_SOURCE_GROUPS.map((g) => (
+                      <optgroup key={g} label={g}>
+                        {LEAD_SOURCES.filter((s) => s.group === g).map((s) => (
+                          <option key={s.value} value={s.value}>{s.label}</option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-gray-700">Profession</label>
+                  <select
+                    value={walkIn.profession}
+                    onChange={(e) => setWalkIn({ ...walkIn, profession: e.target.value })}
+                    className={inputCls}
+                  >
+                    <option value="">Select…</option>
+                    {PROFESSIONS.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              {walkIn.profession === "other" && (
+                <input
+                  value={walkIn.profession_other}
+                  onChange={(e) => setWalkIn({ ...walkIn, profession_other: e.target.value })}
+                  placeholder="Profession (write)"
+                  className={`${inputCls} mt-2`}
+                />
+              )}
+              {walkIn.lead_id ? (
+                <p className="mt-1.5 text-[10.5px] text-gray-500">The existing lead keeps its own source; these only fill empty fields.</p>
+              ) : null}
+            </div>
+          )}
+
           {/* REFERENCE */}
           <div>
             <label className="mb-1.5 block text-xs font-medium text-gray-700">
@@ -2126,6 +2287,16 @@ function SuccessModal({
               {formatCurrency(result.paid_amount)}
             </span>
           </div>
+          {result.lead_text && (
+            <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+              CRM lead: {result.lead_text}
+            </div>
+          )}
+          {result.lead_warning && (
+            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              {result.lead_warning}
+            </div>
+          )}
           {result.change_due > 0 && (
             <div className="flex items-center justify-between rounded-md border border-[#17D65D]/30 bg-[#17D65D]/5 px-3 py-2">
               <span className="text-sm font-medium text-[#0fa846]">
@@ -2138,11 +2309,21 @@ function SuccessModal({
           )}
         </div>
 
-        <div className="border-t border-gray-200 bg-gray-50 px-6 py-3.5">
+        <div className="flex gap-2 border-t border-gray-200 bg-gray-50 px-6 py-3.5">
+          {result.id > 0 && (
+            <a
+              href={`/print/invoice/${result.id}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex flex-1 items-center justify-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-800 hover:bg-gray-50"
+            >
+              🧾 Invoice / PDF / WhatsApp
+            </a>
+          )}
           <button
             type="button"
             onClick={onClose}
-            className={`${btnPrimary} w-full`}
+            className={`${btnPrimary} flex-1`}
           >
             New Sale
           </button>

@@ -4,6 +4,7 @@ import { requireUser, unauthorized } from "@/lib/requireUser";
 import { accessFromRequest, can } from "@/lib/access";
 import { cleanDate } from "@/lib/leadsTable";
 import { HANDOVER_TABLE, ensureHandoverTable } from "@/lib/orderHandover";
+import { ensurePosTables } from "@/lib/posSale";
 
 /* ============================================================
    GET /api/reports/sales?from=YYYY-MM-DD&to=YYYY-MM-DD
@@ -24,6 +25,7 @@ export async function GET(req: NextRequest) {
     const user = await requireUser(req);
     if (!user) return unauthorized();
     await ensureHandoverTable();
+    await ensurePosTables();
     const sp = new URL(req.url).searchParams;
     const from = cleanDate(sp.get("from"));
     const to = cleanDate(sp.get("to"));
@@ -81,8 +83,10 @@ export async function GET(req: NextRequest) {
            FROM invoices i WHERE ${W} GROUP BY k ORDER BY k`),
       q(`SELECT COALESCE(p.name, ii.description, 'Item') AS name, p.sku AS code,
                 SUM(ii.quantity) AS qty, SUM(ii.line_total) AS revenue,
-                SUM(CASE WHEN p.id IS NOT NULL AND p.purchase_price > 0
-                         THEN ii.line_total - ii.quantity * p.purchase_price END) AS profit
+                /* cost saved on the bill at the time of sale; older bills fall back to the
+                   product's current cost. Unknown cost -> no profit shown (never guessed). Tax excluded. */
+                SUM(CASE WHEN COALESCE(ii.unit_cost, NULLIF(p.purchase_price, 0)) IS NOT NULL
+                         THEN ii.line_total - COALESCE(ii.line_tax, 0) - ii.quantity * COALESCE(ii.unit_cost, p.purchase_price) END) AS profit
            FROM invoice_items ii
            JOIN invoices i ON i.id = ii.invoice_id
            LEFT JOIN products p ON p.id = ii.product_id
