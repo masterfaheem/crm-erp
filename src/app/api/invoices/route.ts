@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isWarrantyLine } from "@/lib/extWarranty";
 import { query, getPool } from "@/lib/db";
 import { ensureLedgerReady } from "@/lib/ledgerSetup";
 import { requireUser, unauthorized } from "@/lib/requireUser";
@@ -297,7 +298,8 @@ export async function POST(req: NextRequest) {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [invoiceId, p.product_id, p.description, p.quantity, p.unit_price, p.tax_rate,
          p.discount_percent, p.line_subtotal, p.line_tax, p.line_discount, p.line_total,
-         costs.get(Number(p.product_id) || 0) ?? null]
+         /* extended warranty is a service: no purchase cost */
+         !p.product_id && isWarrantyLine(p.description) ? 0 : costs.get(Number(p.product_id) || 0) ?? null]
       );
     }
 
