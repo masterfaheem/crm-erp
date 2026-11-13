@@ -231,7 +231,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
     } catch {
       /* handover table not created yet */
     }
-    if (h && h.status !== "invoiced") {
+    if (h && !["invoiced", "ready", "packed"].includes(String(h.status))) {
       conn.release();
       return NextResponse.json(
         { error: "This bill belongs to an online order that is already dispatched — it can't be deleted." },
