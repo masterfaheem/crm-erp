@@ -40,7 +40,9 @@ interface Report {
 const N = (v: unknown) => Number(v) || 0;
 const STATUS_LABEL: Record<string, string> = {
   pending: "To bill",
-  invoiced: "Ready to dispatch",
+  invoiced: "Billed (testing)",
+  ready: "Tested (ready to pack)",
+  packed: "Packed",
   shipped: "Dispatched",
   delivered: "Delivered (review pending)",
   completed: "Completed",
@@ -206,7 +208,7 @@ export default function SalesReportPage() {
                 </Card>
 
                 <Card title="📦 Online Orders Pipeline" hint="Orders created from won leads in this period">
-                  <BarList rows={["pending", "invoiced", "shipped", "delivered", "completed", "cancelled"].map((s) => {
+                  <BarList rows={["pending", "invoiced", "ready", "packed", "shipped", "delivered", "completed", "cancelled"].map((s) => {
                     const r = data.orders_by_status.find((x) => x.k === s);
                     return { label: STATUS_LABEL[s], value: N(r?.n) };
                   }).filter((r) => r.value > 0)} empty="No online orders yet" />

@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { QC_ITEMS, checklistProblem, type QcChecklist, type QcResult } from "@/lib/qcChecklist";
 
 /* ============================================================
    ONLINE ORDER BOARD  (used on /dispatch and inside POS)
    Orders handed over from won leads:
-   pending -> (bill in POS) invoiced -> shipped -> delivered
-   -> review -> completed
+   pending -> (bill in POS) invoiced -> (QC test) ready -> packed
+   -> shipped -> delivered -> review -> completed
 ============================================================ */
 interface OrderItem {
   product_id: number | null;
@@ -57,14 +58,20 @@ export interface Order {
   delivered_on: string | null;
   review_rating: number | null;
   review_comment: string | null;
+  qc_checklist?: string | null;
+  tested_by?: string | null;
+  qc_on?: string | null;
+  packed_on?: string | null;
   items: OrderItem[];
 }
 
 const TABS = [
   { key: "pending", label: "1 · To Bill", tone: "text-amber-600" },
-  { key: "invoiced", label: "2 · Ready to Dispatch", tone: "text-blue-600" },
-  { key: "shipped", label: "3 · Dispatched", tone: "text-indigo-600" },
-  { key: "delivered", label: "4 · Review", tone: "text-pink-600" },
+  { key: "invoiced", label: "2 · Billed · Test", tone: "text-blue-600" },
+  { key: "ready", label: "3 · Ready to Pack", tone: "text-cyan-600" },
+  { key: "packed", label: "4 · Packed", tone: "text-violet-600" },
+  { key: "shipped", label: "5 · Dispatched", tone: "text-indigo-600" },
+  { key: "delivered", label: "6 · Review", tone: "text-pink-600" },
   { key: "completed", label: "✓ Completed", tone: "text-green-600" },
   { key: "cancelled", label: "Cancelled", tone: "text-gray-500" },
   { key: "all", label: "All", tone: "text-gray-900" },
@@ -72,6 +79,8 @@ const TABS = [
 const STATUS_BADGE: Record<string, string> = {
   pending: "bg-amber-100 text-amber-800",
   invoiced: "bg-blue-100 text-blue-800",
+  ready: "bg-cyan-100 text-cyan-800",
+  packed: "bg-violet-100 text-violet-800",
   shipped: "bg-indigo-100 text-indigo-800",
   delivered: "bg-pink-100 text-pink-800",
   completed: "bg-green-100 text-green-800",
@@ -79,7 +88,9 @@ const STATUS_BADGE: Record<string, string> = {
 };
 const STATUS_LABEL: Record<string, string> = {
   pending: "To Bill",
-  invoiced: "Billed · Ready to Dispatch",
+  invoiced: "Billed · Testing",
+  ready: "Tested · Ready to Pack",
+  packed: "Packed · Ready to Dispatch",
   shipped: "Dispatched",
   delivered: "Delivered · Review pending",
   completed: "Completed",
@@ -167,6 +178,31 @@ export function OrderBoard({
   const [courier, setCourier] = useState("TCS");
   const [tracking, setTracking] = useState("");
   const [copied, setCopied] = useState<number | null>(null);
+  const [qcFor, setQcFor] = useState<number | null>(null);
+  const [qc, setQc] = useState<QcChecklist>({});
+  const [testedBy, setTestedBy] = useState("");
+  const [testers, setTesters] = useState<{ id: number; name: string }[]>([]);
+
+  /* team list for "Tested by" (shared testing PC -> pick the name) */
+  useEffect(() => {
+    fetch("/api/dispatch/testers", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : { data: [] }))
+      .then((j) => setTesters(j.data || []))
+      .catch(() => setTesters([]));
+  }, []);
+
+  const openQc = (o: Order) => {
+    if (qcFor === o.id) return setQcFor(null);
+    let saved: QcChecklist = {};
+    try {
+      saved = o.qc_checklist ? JSON.parse(o.qc_checklist) : {};
+    } catch {
+      saved = {};
+    }
+    setQc(saved);
+    setTestedBy(o.tested_by || "");
+    setQcFor(o.id);
+  };
 
   const load = useCallback(async (t: string, q: string) => {
     setLoading(true);
@@ -196,6 +232,7 @@ export function OrderBoard({
     setTab(t);
     setReviewFor(null);
     setShipFor(null);
+    setQcFor(null);
     onTabChange?.(t);
   };
 
@@ -212,6 +249,7 @@ export function OrderBoard({
       if (!r.ok) throw new Error(j.error || "Update failed");
       setShipFor(null);
       setReviewFor(null);
+      setQcFor(null);
       await load(tab, search);
     } catch (e) {
       window.alert(e instanceof Error ? e.message : "Update failed");
@@ -258,7 +296,7 @@ export function OrderBoard({
               <div>
                 <h1 className="text-2xl font-bold tracking-tight text-gray-900 sm:text-3xl">📦 Online Orders</h1>
                 <p className="mt-1 text-sm text-gray-500">
-                  Bill → Dispatch → Deliver → Review → Completed
+                  Bill → Test (QC) → Pack → Dispatch → Deliver → Review → Completed
                 </p>
               </div>
               )}
@@ -408,6 +446,33 @@ export function OrderBoard({
                       {o.status === "invoiced" && (
                         <button
                           disabled={busy === o.id}
+                          onClick={() => openQc(o)}
+                          className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-blue-700"
+                        >
+                          🧪 Test & mark Ready
+                        </button>
+                      )}
+                      {o.status === "ready" && (
+                        <>
+                          <button
+                            disabled={busy === o.id}
+                            onClick={() => update(o, { status: "packed" })}
+                            className="rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-violet-700 disabled:opacity-50"
+                          >
+                            📦 Mark Packed
+                          </button>
+                          <button
+                            disabled={busy === o.id}
+                            onClick={() => openQc(o)}
+                            className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                          >
+                            🧪 Test report
+                          </button>
+                        </>
+                      )}
+                      {o.status === "packed" && (
+                        <button
+                          disabled={busy === o.id}
                           onClick={() => {
                             setShipFor(shipFor === o.id ? null : o.id);
                             setCourier(o.courier || "TCS");
@@ -452,12 +517,101 @@ export function OrderBoard({
                       )}
                     </div>
 
-                    {(o.shipped_on || o.delivered_on) && (
+                    {(o.qc_on || o.packed_on || o.shipped_on || o.delivered_on) && (
                       <p className="mt-2 text-[11px] text-gray-500">
-                        {o.shipped_on && `Dispatched ${o.shipped_on}`}
-                        {o.shipped_on && o.delivered_on && " · "}
-                        {o.delivered_on && `Delivered ${o.delivered_on}`}
+                        {[
+                          o.qc_on && `Tested ${o.qc_on}${o.tested_by ? ` by ${o.tested_by}` : ""}`,
+                          o.packed_on && `Packed ${o.packed_on}`,
+                          o.shipped_on && `Dispatched ${o.shipped_on}`,
+                          o.delivered_on && `Delivered ${o.delivered_on}`,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
                       </p>
+                    )}
+
+                    {qcFor === o.id && (
+                      <div className="mt-3 space-y-3 rounded-xl bg-blue-50 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <p className="text-xs font-bold text-blue-900">🧪 Testing checklist (QC)</p>
+                          {o.status === "invoiced" && (
+                            <button
+                              type="button"
+                              onClick={() => setQc(Object.fromEntries(QC_ITEMS.map((it) => [it.key, "pass" as QcResult])))}
+                              className="rounded-md border border-blue-200 bg-white px-2 py-1 text-[11px] font-semibold text-blue-800"
+                            >
+                              ✓ All passed
+                            </button>
+                          )}
+                        </div>
+                        <ul className="divide-y divide-blue-100 rounded-lg bg-white">
+                          {QC_ITEMS.map((it) => (
+                            <li key={it.key} className="flex items-center justify-between gap-2 px-3 py-1.5 text-xs">
+                              <span className="text-gray-800">{it.label}</span>
+                              <span className="flex shrink-0 gap-1">
+                                {(
+                                  [
+                                    ["pass", "✓ OK", "bg-green-600 text-white"],
+                                    ["fail", "✗ Fail", "bg-red-600 text-white"],
+                                    ["na", "N/A", "bg-gray-600 text-white"],
+                                  ] as [QcResult, string, string][]
+                                ).map(([v, label, on]) => (
+                                  <button
+                                    key={v}
+                                    type="button"
+                                    disabled={o.status !== "invoiced"}
+                                    onClick={() => setQc({ ...qc, [it.key]: v })}
+                                    className={`rounded px-2 py-0.5 text-[11px] font-semibold ${
+                                      qc[it.key] === v ? on : "bg-gray-100 text-gray-600"
+                                    }`}
+                                  >
+                                    {label}
+                                  </button>
+                                ))}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                        {o.status === "invoiced" ? (
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                            <select
+                              value={testedBy}
+                              onChange={(e) => setTestedBy(e.target.value)}
+                              className="flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm"
+                            >
+                              <option value="">Tested by… (select your name)</option>
+                              {testers.map((t) => (
+                                <option key={t.id} value={t.name}>{t.name}</option>
+                              ))}
+                            </select>
+                            <button
+                              disabled={busy === o.id}
+                              onClick={() => {
+                                const problem = checklistProblem(qc);
+                                if (problem) return window.alert(problem);
+                                if (!testedBy) return window.alert("Select who tested the laptop");
+                                update(o, { status: "ready", qc_checklist: qc, tested_by: testedBy });
+                              }}
+                              className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50"
+                            >
+                              Save & mark Ready
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-blue-900">
+                            <span>Tested by <b>{o.tested_by || "—"}</b>{o.qc_on ? ` · ${o.qc_on}` : ""}</span>
+                            {o.status === "ready" && (
+                              <button
+                                disabled={busy === o.id}
+                                onClick={() => window.confirm("Send this order back to testing?") && update(o, { status: "invoiced" })}
+                                className="rounded-md border border-blue-200 bg-white px-2 py-1 text-[11px] font-semibold text-blue-800"
+                              >
+                                ↩ Re-test
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     )}
 
                     {o.status === "completed" && (o.review_rating || o.review_comment) && (

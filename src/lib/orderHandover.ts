@@ -63,6 +63,12 @@ export async function ensureHandoverTable(): Promise<void> {
     ["review_comment", "VARCHAR(1000) NULL"],
     ["review_at", "DATETIME NULL"],
     ["payment_id", "INT UNSIGNED NULL"],
+    /* QC / testing by Operations before packing */
+    ["qc_checklist", "TEXT NULL"],
+    ["tested_by", "VARCHAR(120) NULL"],
+    ["qc_by", "INT UNSIGNED NULL"],
+    ["qc_at", "DATETIME NULL"],
+    ["packed_at", "DATETIME NULL"],
   ];
   const missing = extra.filter(([c]) => !have.has(c));
   if (missing.length) {
@@ -111,12 +117,15 @@ export async function ensureHandoverTable(): Promise<void> {
   ensured = true;
 }
 
-/* pending -> invoiced -> shipped -> delivered -> completed (review taken)  (or cancelled) */
-export const DISPATCH_STATUSES = ["pending", "invoiced", "shipped", "delivered", "completed", "cancelled"];
+/* pending (to bill) -> invoiced (billed, to test) -> ready (QC done) -> packed
+   -> shipped -> delivered -> completed (review taken)   (or cancelled) */
+export const DISPATCH_STATUSES = ["pending", "invoiced", "ready", "packed", "shipped", "delivered", "completed", "cancelled"];
 /* matching sales_orders.status */
 export const SO_STATUS_FOR: Record<string, string> = {
   pending: "confirmed",
   invoiced: "processing",
+  ready: "processing",
+  packed: "processing",
   shipped: "shipped",
   delivered: "delivered",
   completed: "delivered",
@@ -323,6 +332,8 @@ export const HANDOVER_SELECT = `
          DATE_FORMAT(h.dispatch_date, '%Y-%m-%d') AS dispatch_day,
          DATE_FORMAT(h.shipped_at, '%Y-%m-%d %H:%i') AS shipped_on,
          DATE_FORMAT(h.delivered_at, '%Y-%m-%d %H:%i') AS delivered_on,
+         DATE_FORMAT(h.qc_at, '%Y-%m-%d %H:%i') AS qc_on,
+         DATE_FORMAT(h.packed_at, '%Y-%m-%d %H:%i') AS packed_on,
          so.order_number, so.status AS so_status, so.grand_total AS so_total, so.order_date,
          c.customer_code, c.name AS customer_name, c.phone AS customer_phone, c.whatsapp AS customer_whatsapp,
          l.lead_number, l.first_name AS lead_first_name, l.last_name AS lead_last_name,

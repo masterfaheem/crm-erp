@@ -74,11 +74,12 @@ export const PERMISSION_GROUPS: PermGroup[] = [
   },
   {
     module: "dispatch",
-    label: "Online Orders / Dispatch",
+    label: "Online Orders / Operations",
     icon: "📦",
     items: [
       { key: "dispatch.view", label: "View online orders board" },
-      { key: "dispatch.manage", label: "Dispatch, deliver, review & cancel orders" },
+      { key: "dispatch.qc", label: "Test laptops (QC checklist) & mark ready", hint: "Billed order → tested → Ready to pack" },
+      { key: "dispatch.manage", label: "Pack, dispatch, deliver, review & cancel orders" },
     ],
   },
   {
@@ -207,13 +208,12 @@ export const PERMISSION_LABEL: Record<string, string> = Object.fromEntries(
 /* Ready-made starting points for a new role / user */
 export const ROLE_TEMPLATES: { name: string; description: string; keys: string[] }[] = [
   {
-    name: "Sales Team",
-    description: "Leads to bill: leads, customers, POS, online orders",
+    name: "Sales Executive",
+    description: "Online sales: own leads, follow-ups, pipeline, available stock, won lead → order",
     keys: [
       "dashboard.view",
       "leads.view", "leads.create", "leads.edit", "leads.convert",
-      "customers.view", "customers.create", "customers.edit", "customers.balance",
-      "sales.view", "sales.create", "sales.payments",
+      "customers.view", "customers.create", "customers.edit",
       "dispatch.view",
       "products.view", "inventory.view",
       "tickets.view", "tickets.manage",
@@ -228,7 +228,7 @@ export const ROLE_TEMPLATES: { name: string; description: string; keys: string[]
       "leads.view", "leads.view_all", "leads.create", "leads.edit", "leads.assign", "leads.convert", "leads.import",
       "customers.view", "customers.create", "customers.edit", "customers.balance",
       "sales.view", "sales.create", "sales.edit", "sales.discount", "sales.payments", "sales.exchange",
-      "dispatch.view", "dispatch.manage",
+      "dispatch.view",
       "products.view", "inventory.view",
       "tickets.view", "tickets.manage",
       "whatsapp.view", "whatsapp.send",
@@ -236,21 +236,37 @@ export const ROLE_TEMPLATES: { name: string; description: string; keys: string[]
     ],
   },
   {
+    name: "Billing / Counter",
+    description: "POS bills for walk-ins and online orders, customer details, payments",
+    keys: [
+      "dashboard.view",
+      "customers.view", "customers.create", "customers.edit", "customers.balance",
+      "sales.view", "sales.create", "sales.payments",
+      "dispatch.view",
+      "products.view", "inventory.view",
+    ],
+  },
+  {
+    name: "Operations",
+    description: "Billed orders: QC testing, packing, dispatch, delivery and reviews",
+    keys: [
+      "dashboard.view",
+      "dispatch.view", "dispatch.qc", "dispatch.manage",
+      "sales.view",
+      "customers.view", "products.view", "inventory.view",
+    ],
+  },
+  {
     name: "Inventory / Store",
-    description: "Products, stock, purchases and dispatch",
+    description: "Products, stock, purchases and suppliers",
     keys: [
       "dashboard.view",
       "products.view", "products.create", "products.edit", "products.cost",
       "inventory.view", "inventory.adjust", "inventory.transfer",
       "purchases.view", "purchases.create", "purchases.edit",
       "suppliers.view", "suppliers.create", "suppliers.edit",
-      "dispatch.view", "dispatch.manage",
+      "dispatch.view",
     ],
-  },
-  {
-    name: "Dispatch",
-    description: "Online orders: dispatch, delivery and reviews",
-    keys: ["dashboard.view", "dispatch.view", "dispatch.manage", "customers.view", "products.view", "inventory.view"],
   },
   {
     name: "Accounts",
@@ -285,6 +301,7 @@ export const API_RULES: ApiRule[] = [
   { re: /^\/api\/roles/, GET: ["users.view", "users.manage", "roles.manage"], ALL: ["roles.manage"] },
   { re: /^\/api\/users/, GET: ["users.view", "users.manage", "leads.view", "customers.view"], ALL: ["users.manage"] },
   { re: /^\/api\/branches/, GET: ANY, ALL: ["settings.manage"] },
+  { re: /^\/api\/settings\/extended-warranty/, GET: ANY, ALL: ["settings.manage"] },
   { re: /^\/api\/audit-logs/, GET: ["audit.view"] },
 
   { re: /^\/api\/leads\/export/, GET: ["leads.export"] },
@@ -309,7 +326,7 @@ export const API_RULES: ApiRule[] = [
   { re: /^\/api\/invoices\/[^/]+\/cancel/, POST: ["sales.delete"] },
   { re: /^\/api\/exchanges/, GET: ["sales.view", "sales.create", "sales.exchange"], POST: ["sales.exchange"] },
   { re: /^\/api\/(invoices|quotations|sales-orders)/, ...crud(["sales.view"], ["sales.create"], ["sales.edit"], ["sales.delete"]) },
-  { re: /^\/api\/dispatch/, GET: ["dispatch.view", "sales.create"], ALL: ["dispatch.manage"] },
+  { re: /^\/api\/dispatch/, GET: ["dispatch.view", "sales.create"], ALL: ["dispatch.manage", "dispatch.qc"] },
 
   { re: /^\/api\/(product-categories|units)/, GET: ANY, ALL: ["products.create", "products.edit"] },
   {

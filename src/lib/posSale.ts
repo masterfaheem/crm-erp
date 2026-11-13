@@ -5,7 +5,7 @@ import {
   formatLeadNumber,
   nextLeadNumberBase,
 } from "@/lib/leadsTable";
-import { LEAD_SOURCES, PROFESSIONS } from "@/lib/leadOptions";
+import { BUDGET_RANGES, LEAD_SOURCES, PROFESSIONS, USE_CASES } from "@/lib/leadOptions";
 import { phoneMatchSql, uniqueKeys } from "@/lib/orderHandover";
 
 /* ============================================================
@@ -192,24 +192,36 @@ export async function currentCosts(conn: Conn, companyId: number, productIds: nu
 /* ---------------- walk-in sale -> lead ---------------- */
 const SOURCE_VALUES = new Set(LEAD_SOURCES.map((s) => s.value));
 const PROFESSION_VALUES = new Set(PROFESSIONS.map((p) => p.value));
+const BUDGET_VALUES = new Set(BUDGET_RANGES.map((b) => b.value));
+const USE_CASE_VALUES = new Set(USE_CASES.map((u) => u.value));
 
 export type WalkInLeadInput = {
   lead_id?: number | null;
   source?: string | null;
   profession?: string | null;
   profession_other?: string | null;
+  budget_range?: string | null;
+  use_cases?: string | null;
+  use_case_custom?: string | null;
 };
 
 export function cleanWalkInLead(v: unknown): WalkInLeadInput {
   const o = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
   const source = String(o.source ?? "").trim();
   const profession = String(o.profession ?? "").trim();
+  const budget = String(o.budget_range ?? "").trim();
+  const uses = (Array.isArray(o.use_cases) ? o.use_cases : String(o.use_cases ?? "").split(","))
+    .map((x) => String(x).trim())
+    .filter((x) => USE_CASE_VALUES.has(x));
   return {
     lead_id: Number(o.lead_id) || null,
     source: SOURCE_VALUES.has(source) ? source : null,
     profession: PROFESSION_VALUES.has(profession) ? profession : null,
     profession_other:
       profession === "other" && o.profession_other ? String(o.profession_other).trim().slice(0, 100) || null : null,
+    budget_range: BUDGET_VALUES.has(budget) ? budget : null,
+    use_cases: uses.length ? Array.from(new Set(uses)).join(",") : null,
+    use_case_custom: o.use_case_custom ? String(o.use_case_custom).trim().slice(0, 200) || null : null,
   };
 }
 
@@ -274,9 +286,16 @@ export async function linkWalkInLead(
               source = COALESCE(source, ?),
               profession = COALESCE(profession, ?),
               profession_other = COALESCE(profession_other, ?),
+              budget_range = COALESCE(budget_range, ?),
+              use_cases = COALESCE(use_cases, ?),
+              use_case_custom = COALESCE(use_case_custom, ?),
               assigned_to = COALESCE(assigned_to, ?)
         WHERE id = ? AND company_id = ?`,
-      [p.input.source, p.input.profession, p.input.profession_other, user.id, lead.id, companyId]
+      [
+        p.input.source, p.input.profession, p.input.profession_other,
+        p.input.budget_range ?? null, p.input.use_cases ?? null, p.input.use_case_custom ?? null,
+        user.id, lead.id, companyId,
+      ]
     );
     await conn.query(
       `INSERT INTO ${INVOICE_LEAD_TABLE} (invoice_id, company_id, lead_id, sales_channel, lead_created, prev_status, created_by)
@@ -301,14 +320,15 @@ export async function linkWalkInLead(
     `INSERT INTO ${LEADS_TABLE}
        (company_id, branch_id, lead_number, first_name, last_name, phone, alternate_phone, whatsapp,
         source, city, assigned_to, status, priority, address, description,
-        profession, profession_other, sales_channel, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'won', 'medium', ?, ?, ?, ?, 'walk_in', ?)`,
+        profession, profession_other, budget_range, use_cases, use_case_custom, sales_channel, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'won', 'medium', ?, ?, ?, ?, ?, ?, ?, 'walk_in', ?)`,
     [
       companyId, user.branch_id ?? null, leadNumber, first, last,
       c?.phone || null, c?.alternate_phone || null, c?.whatsapp || null,
       p.input.source, c?.city || null, user.id, c?.billing_address || null,
       `Walk-in sale ${p.invoiceNumber} (created from POS)`,
-      p.input.profession, p.input.profession_other, user.id,
+      p.input.profession, p.input.profession_other,
+      p.input.budget_range ?? null, p.input.use_cases ?? null, p.input.use_case_custom ?? null, user.id,
     ]
   );
   const leadId = (res as { insertId: number }).insertId;
