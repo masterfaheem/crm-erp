@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+
+# a newer deploy replaces one that is still running / stuck
+concurrency:
+  group: deploy-production
+  cancel-in-progress: true
 
 jobs:
   deploy:
@@ -43,19 +49,21 @@ jobs:
               [ -n "$p" ] && SKIP="$SKIP$p "
             done
 
-            # Only consider processes whose binary name is exactly "node".
-            for pid in $(pgrep -x node 2>/dev/null || true); do
+            # Any node / next process (incl. a stuck "next build", which renames itself)
+            # running from the app folder. The PM2 daemon itself is never touched.
+            for d in /proc/[0-9]*; do
+              pid=${d#/proc/}
               case " $SKIP " in *" $pid "*) continue ;; esac
-              [ -d "/proc/$pid" ] || continue
-              if [ -L "/proc/$pid/cwd" ]; then
-                CWD=$(readlink "/proc/$pid/cwd" 2>/dev/null || echo "")
-                case "$CWD" in
-                  "$APP_DIR"*)
-                    echo "    killing pid=$pid cwd=$CWD"
-                    kill -9 "$pid" 2>/dev/null || true
-                    ;;
-                esac
-              fi
+              CWD=$(readlink "$d/cwd" 2>/dev/null || echo "")
+              case "$CWD" in "$APP_DIR"*) ;; *) continue ;; esac
+              CMD=$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null || echo "")
+              case "$CMD" in *PM2*|*pm2*) continue ;; esac
+              case "$CMD" in
+                *node*|*next*)
+                  echo "    killing pid=$pid cmd=$(echo "$CMD" | cut -c1-80)"
+                  kill -9 "$pid" 2>/dev/null || true
+                  ;;
+              esac
             done
 
             sleep 2
@@ -74,8 +82,15 @@ jobs:
             echo "==> Installing dependencies..."
             npm ci
 
+            echo "==> Server resources before build..."
+            free -m || true
+            nproc || true
+            df -h "$APP_DIR" | tail -1 || true
+
             echo "==> Building application..."
-            npm run build
+            export NEXT_TELEMETRY_DISABLED=1
+            # never hang forever: stop the build after 12 minutes so the log shows it
+            timeout 12m npm run build
 
             echo "==> Restarting application..."
             pm2 restart "$APP_NAME" --update-env || pm2 start npm --name "$APP_NAME" -- start
