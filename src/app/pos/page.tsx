@@ -4,7 +4,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Navbar from "@/app/components/Navbar";
 import { useAccess } from "@/app/components/useAccess";
 import { OrderBoard, type Order as BoardOrder } from "@/app/dispatch/OrderBoard";
-import { LEAD_SOURCES, LEAD_SOURCE_GROUPS, PROFESSIONS } from "@/lib/leadOptions";
+import { BUDGET_RANGES, LEAD_SOURCES, LEAD_SOURCE_GROUPS, PROFESSIONS, USE_CASES } from "@/lib/leadOptions";
+import {
+  DEFAULT_WARRANTY_RULES,
+  WARRANTY_PLANS,
+  isWarrantyLine,
+  planFromLine,
+  ruleText,
+  warrantyLineName,
+  warrantyPrice,
+  type WarrantyPlanKey,
+  type WarrantyRules,
+} from "@/lib/extWarranty";
 import { CitySelect } from "@/app/leads/leadUi";
 
 /* ============================================================
@@ -106,13 +117,15 @@ interface WalkInLead {
   source: string;
   profession: string;
   profession_other: string;
+  budget_range: string;
+  use_cases: string[];
 }
 interface LeadMatch {
   open_leads: { id: number; lead_number: string; first_name: string; last_name: string | null; status: string; source: string | null; profession: string | null }[];
   last: { lead_number: string; status: string; source: string | null; profession: string | null; profession_other: string | null } | null;
   past_purchases: number;
 }
-const EMPTY_WALK_IN: WalkInLead = { lead_id: null, source: "", profession: "", profession_other: "" };
+const EMPTY_WALK_IN: WalkInLead = { lead_id: null, source: "", profession: "", profession_other: "", budget_range: "", use_cases: [] };
 
 /* walk-in: handed over at the counter, or sent by delivery (goes to the dispatch board) */
 interface WalkInDelivery {
@@ -256,6 +269,53 @@ function POSContent() {
   /* ---------- Cart state ---------- */
   const [cart, setCart] = useState<CartItem[]>([]);
 
+  /* ---------- Extended warranty (6 months / 1 year) ----------
+     Added to the bill as its own line; price from Settings → Extended Warranty */
+  const [warrantyRules, setWarrantyRules] = useState<WarrantyRules>(DEFAULT_WARRANTY_RULES);
+  const [warrantyPlan, setWarrantyPlan] = useState<WarrantyPlanKey | "">("");
+  useEffect(() => {
+    fetch("/api/settings/extended-warranty", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => j?.data && setWarrantyRules(j.data))
+      .catch(() => {});
+  }, []);
+  /* products total (after their line discounts) the % is worked out on */
+  const warrantyBase = useMemo(
+    () => cart.filter((it) => !isWarrantyLine(it.name)).reduce((a, it) => a + computeLineTotal(it), 0),
+    [cart]
+  );
+  /* keep the warranty line in the cart in step with the chosen plan and the bill */
+  useEffect(() => {
+    const want = warrantyPlan ? warrantyPrice(warrantyRules[warrantyPlan], warrantyBase) : 0;
+    const name = warrantyPlan ? warrantyLineName(warrantyPlan) : "";
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setCart((prev) => {
+      const current = prev.filter((it) => isWarrantyLine(it.name));
+      const others = prev.filter((it) => !isWarrantyLine(it.name));
+      if (!warrantyPlan || !(want > 0) || !others.length) return current.length ? others : prev;
+      if (current.length === 1 && current[0].name === name && current[0].unit_price === want && current[0].quantity === 1) {
+        return prev;
+      }
+      const line: CartItem = {
+        key: current[0]?.key || genKey(),
+        product_id: 0,
+        name,
+        sku: "WARRANTY",
+        barcode: null,
+        unit_short_name: "plan",
+        category_name: null,
+        quantity: 1,
+        unit_price: want,
+        tax_rate: 0,
+        discount_percent: 0,
+        available_stock: 0,
+        cost: null,
+        line_total: want,
+      };
+      return [...others, line];
+    });
+  }, [warrantyPlan, warrantyRules, warrantyBase]);
+
   /* ---------- Order-level state ---------- */
   const [orderDiscountPercent, setOrderDiscountPercent] = useState(0);
   const [shippingFee, setShippingFee] = useState(0);
@@ -323,6 +383,9 @@ function POSContent() {
       return item;
     });
     setCart(items);
+    /* the sales team may already have added an extended warranty on the order */
+    const w = o.items.find((it) => isWarrantyLine(it.description || it.product_name));
+    setWarrantyPlan(w ? planFromLine(w.description || w.product_name) || "" : "");
     setLinkedOrder(o);
     setReference(o.order_number);
     setNotes(
@@ -365,6 +428,8 @@ function POSContent() {
           source: src || "",
           profession: open?.profession || m.last?.profession || "",
           profession_other: m.last?.profession_other || "",
+          budget_range: "",
+          use_cases: [],
         });
       })
       .catch(() => {});
@@ -495,7 +560,10 @@ function POSContent() {
 
   const clearCart = () => {
     if (cart.length === 0) return;
-    if (window.confirm("Clear all items from the cart?")) setCart([]);
+    if (window.confirm("Clear all items from the cart?")) {
+      setCart([]);
+      setWarrantyPlan("");
+    }
   };
 
   /* ---------- Totals ---------- */
@@ -596,6 +664,8 @@ function POSContent() {
               source: walkIn.source || null,
               profession: walkIn.profession || null,
               profession_other: walkIn.profession === "other" ? walkIn.profession_other || null : null,
+              budget_range: walkIn.budget_range || null,
+              use_cases: walkIn.use_cases,
             },
         walk_in_delivery: linkedOrder ? null : walkInDelivery,
         customer_id: selectedCustomer.id,
@@ -667,6 +737,7 @@ function POSContent() {
 
       /* reset */
       setCart([]);
+      setWarrantyPlan("");
       setSelectedCustomer(null);
       setLinkedOrder(null);
       setPendingOrders([]);
@@ -805,6 +876,7 @@ function POSContent() {
                             onClick={() => {
                               setLinkedOrder(null);
                               setCart([]);
+                              setWarrantyPlan("");
                               setReference("");
                               setNotes("");
                               setAmountPaid("");
@@ -1089,6 +1161,35 @@ function POSContent() {
                     value={formatCurrency(totals.taxTotal)}
                     muted
                   />
+
+                  {/* Extended warranty: none / 6 months / 1 year */}
+                  <div className="rounded-md border border-[#17D65D]/30 bg-white p-2">
+                    <div className="mb-1 flex items-center justify-between text-xs">
+                      <span className="font-semibold text-gray-700">🛡️ Extended warranty</span>
+                      {warrantyPlan && (
+                        <span className="font-semibold text-[#0fa846]">
+                          + {formatCurrency(warrantyPrice(warrantyRules[warrantyPlan], warrantyBase))}
+                        </span>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-3 gap-1">
+                      {([["", "None", ""] as const, ...WARRANTY_PLANS.filter((p) => warrantyRules[p.key]?.enabled).map((p) => [p.key, p.label, ruleText(warrantyRules[p.key])] as const)]).map(
+                        ([key, label, hint]) => (
+                          <button
+                            key={key || "none"}
+                            type="button"
+                            onClick={() => setWarrantyPlan(key as WarrantyPlanKey | "")}
+                            className={`rounded px-1.5 py-1 text-[11px] font-semibold leading-tight ${
+                              warrantyPlan === key ? "bg-[#17D65D] text-black" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                            }`}
+                          >
+                            {label}
+                            {hint && <span className="block text-[9.5px] font-normal opacity-80">{hint}</span>}
+                          </button>
+                        )
+                      )}
+                    </div>
+                  </div>
 
                   {/* Order discount input (needs "Give discount" permission) */}
                   {can("sales.discount") && (
@@ -2230,6 +2331,44 @@ function CheckoutModal({
                   className={`${inputCls} mt-2`}
                 />
               )}
+              <div className="mt-2">
+                <label className="mb-1 block text-[11px] font-medium text-gray-700">Budget</label>
+                <select
+                  value={walkIn.budget_range}
+                  onChange={(e) => setWalkIn({ ...walkIn, budget_range: e.target.value })}
+                  className={inputCls}
+                >
+                  <option value="">Select…</option>
+                  {BUDGET_RANGES.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="mt-2">
+                <label className="mb-1 block text-[11px] font-medium text-gray-700">Laptop for (purpose)</label>
+                <div className="flex flex-wrap gap-1">
+                  {USE_CASES.filter((u) => u.value !== "custom").map((u) => {
+                    const on = walkIn.use_cases.includes(u.value);
+                    return (
+                      <button
+                        key={u.value}
+                        type="button"
+                        onClick={() =>
+                          setWalkIn({
+                            ...walkIn,
+                            use_cases: on ? walkIn.use_cases.filter((x) => x !== u.value) : [...walkIn.use_cases, u.value],
+                          })
+                        }
+                        className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${
+                          on ? "border-blue-600 bg-blue-600 text-white" : "border-gray-300 bg-white text-gray-700"
+                        }`}
+                      >
+                        {u.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
               {walkIn.lead_id ? (
                 <p className="mt-1.5 text-[10.5px] text-gray-500">The existing lead keeps its own source; these only fill empty fields.</p>
               ) : null}
