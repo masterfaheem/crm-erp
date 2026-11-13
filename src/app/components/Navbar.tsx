@@ -126,6 +126,7 @@ const NAV_GROUPS: NavGroup[] = [
       { label: "Users", href: "/settings/users" },
       { label: "Roles & Permissions", href: "/settings/roles" },
       { label: "Branches", href: "/settings/branches" },
+      { label: "Extended Warranty", href: "/settings/extended-warranty" },
       { label: "Audit Logs", href: "/settings/audit-logs" },
     ],
   },
