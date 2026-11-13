@@ -2,6 +2,15 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CitySelect, Field, inputCls } from "./leadUi";
+import {
+  DEFAULT_WARRANTY_RULES,
+  WARRANTY_PLANS,
+  ruleText,
+  warrantyLineName,
+  warrantyPrice,
+  type WarrantyPlanKey,
+  type WarrantyRules,
+} from "@/lib/extWarranty";
 
 /* ============================================================
    CONVERT WON LEAD -> CUSTOMER + SALES ORDER (to Operations)
@@ -99,6 +108,16 @@ export default function ConvertOrderModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  /* extended warranty (6 months / 1 year) — added to the order as its own line */
+  const [warrantyRules, setWarrantyRules] = useState<WarrantyRules>(DEFAULT_WARRANTY_RULES);
+  const [warrantyPlan, setWarrantyPlan] = useState<WarrantyPlanKey | "">("");
+  useEffect(() => {
+    fetch("/api/settings/extended-warranty", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => j?.data && setWarrantyRules(j.data))
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     fetch(`/api/leads/${lead.id}/convert`, { credentials: "include" })
       .then((r) => (r.ok ? r.json() : null))
@@ -106,10 +125,12 @@ export default function ConvertOrderModal({
       .catch(() => {});
   }, [lead.id]);
 
-  const total = useMemo(
+  const productsTotal = useMemo(
     () => items.reduce((s, it) => s + (Number(it.quantity) || 0) * (Number(it.unit_price) || 0), 0),
     [items]
   );
+  const warrantyAmt = warrantyPlan ? warrantyPrice(warrantyRules[warrantyPlan], productsTotal) : 0;
+  const total = productsTotal + warrantyAmt;
   const adv = advance === null ? total : Number(advance) || 0;
   const cod = Math.max(0, total - adv);
 
@@ -150,12 +171,17 @@ export default function ConvertOrderModal({
         credentials: "include",
         body: JSON.stringify({
           ...d,
-          items: clean.map((it) => ({
-            product_id: it.mode === "product" ? it.product_id : null,
-            description: it.mode === "custom" ? it.description.trim() : it.product_label,
-            quantity: Number(it.quantity),
-            unit_price: Number(it.unit_price),
-          })),
+          items: [
+            ...clean.map((it) => ({
+              product_id: it.mode === "product" ? it.product_id : null,
+              description: it.mode === "custom" ? it.description.trim() : it.product_label,
+              quantity: Number(it.quantity),
+              unit_price: Number(it.unit_price),
+            })),
+            ...(warrantyPlan && warrantyAmt > 0
+              ? [{ product_id: null, description: warrantyLineName(warrantyPlan), quantity: 1, unit_price: warrantyAmt }]
+              : []),
+          ],
           specs_note: specs.trim() || null,
           advance_amount: adv,
           advance_method: adv > 0 ? method : "none",
@@ -265,6 +291,29 @@ export default function ConvertOrderModal({
               <Field label="Specs / Requirement Note">
                 <input value={specs} onChange={(e) => setSpecs(e.target.value)} placeholder="RAM, SSD, charger, bag, warranty…" className={inputCls} />
               </Field>
+            </div>
+            <div className="mt-3 rounded-xl border border-[#17D65D]/30 bg-[#17D65D]/5 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <p className="text-xs font-bold text-gray-900">🛡️ Extended Warranty</p>
+                {warrantyAmt > 0 && <p className="text-xs font-bold text-[#0f9d48]">+ {rs(warrantyAmt)}</p>}
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                {([["", "No extended warranty", ""] as const, ...WARRANTY_PLANS.filter((p) => warrantyRules[p.key]?.enabled).map((p) => [p.key, p.label, ruleText(warrantyRules[p.key])] as const)]).map(
+                  ([key, label, hint]) => (
+                    <button
+                      key={key || "none"}
+                      type="button"
+                      onClick={() => setWarrantyPlan(key as WarrantyPlanKey | "")}
+                      className={`rounded-lg border px-2 py-2 text-xs font-semibold ${
+                        warrantyPlan === key ? "border-[#17D65D] bg-[#17D65D] text-black" : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50"
+                      }`}
+                    >
+                      {label}
+                      {hint && <span className="block text-[10px] font-normal opacity-80">{hint}</span>}
+                    </button>
+                  )
+                )}
+              </div>
             </div>
           </div>
 
