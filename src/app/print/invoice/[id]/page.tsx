@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { isExchangeNo } from "@/lib/format";
 import { useParams } from "next/navigation";
 import { BRAND, DEFAULT_ITEM_WARRANTY, WARRANTY_TERMS, waNumber } from "@/lib/invoiceBrand";
+import { isWarrantyLine, planFromLine, planMonths, warrantyValidTill } from "@/lib/extWarranty";
 
 /* ============================================================
    PRINTABLE INVOICE  (/print/invoice/:id)
@@ -96,8 +97,33 @@ export default function PrintInvoicePage() {
   const deliveryText = d
     ? ["Courier delivery", d.courier, d.tracking_no ? `Tracking ${d.tracking_no}` : null].filter(Boolean).join(" · ")
     : "Handed over at store";
+  /* extended warranty bought on this bill (its own line, e.g. "Extended Warranty — 6 Months") */
+  const extLine = inv.items.find((it) => Number(it.quantity) > 0 && isWarrantyLine(it.description));
+  const extMonths = extLine ? planMonths(planFromLine(extLine.description)) : 0;
+  const extTill = extMonths
+    ? warrantyValidTill(`${String(inv.invoice_date).slice(0, 10)}T00:00:00`, extMonths).toLocaleDateString("en-PK", {
+        day: "2-digit", month: "short", year: "numeric",
+      })
+    : "";
   const lineWarranty = (it: Item) =>
-    Number(it.quantity) < 0 ? "Returned" : inv.exchange ? `Till ${fmtDay(inv.exchange.warranty_until_day)}` : DEFAULT_ITEM_WARRANTY;
+    Number(it.quantity) < 0
+      ? "Returned"
+      : isWarrantyLine(it.description)
+      ? extTill ? `Till ${extTill}` : "—"
+      : inv.exchange
+      ? `Till ${fmtDay(inv.exchange.warranty_until_day)}`
+      : extTill
+      ? `${DEFAULT_ITEM_WARRANTY} + Extended`
+      : DEFAULT_ITEM_WARRANTY;
+  const terms = extTill
+    ? [
+        ...WARRANTY_TERMS,
+        {
+          title: "Extended Warranty",
+          text: `${extMonths === 12 ? "1 year" : `${extMonths} months`} — valid till ${extTill}. Same exclusions apply.`,
+        },
+      ]
+    : WARRANTY_TERMS;
   const deliveryAddress = d
     ? [d.delivery_house, d.delivery_street, d.delivery_area, d.delivery_landmark, d.delivery_city].filter(Boolean).join(", ")
     : [inv.customer_address, inv.customer_city].filter(Boolean).join(", ");
@@ -305,7 +331,7 @@ export default function PrintInvoicePage() {
         <div className="mt-5 rounded-md border border-[#17D65D]/40 bg-[#17D65D]/5 p-3" style={{ breakInside: "avoid" }}>
           <div className="mb-1.5 text-[11px] font-bold uppercase tracking-wider text-gray-800">Warranty Terms &amp; Conditions</div>
           <ol className="grid grid-cols-2 gap-x-5 gap-y-1 text-[10.5px] text-gray-700">
-            {WARRANTY_TERMS.map((t, i) => (
+            {terms.map((t, i) => (
               <li key={t.title}><span className="font-semibold">{i + 1}. {t.title}:</span> {t.text}</li>
             ))}
           </ol>
